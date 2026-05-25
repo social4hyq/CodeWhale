@@ -58,6 +58,10 @@ docker run --rm -it \
 > `https://github.com/Hmbown/CodeWhale/releases`. For manual downloads,
 > verify the SHA-256 manifest and avoid look-alike repositories or search-result
 > mirrors. See [download safety and checksums](docs/INSTALL.md#2-download-safety-and-checksums).
+>
+> macOS Gatekeeper: standalone downloads from a browser may show "Apple cannot verify"
+> warnings. Clear the quarantine attribute on both binaries:
+> `xattr -d com.apple.quarantine ~/.local/bin/codewhale ~/.local/bin/codewhale-tui`.
 
 Already installed? Use the updater that matches the install path:
 

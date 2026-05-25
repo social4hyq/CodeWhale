@@ -53,6 +53,10 @@ docker run --rm -it \
 > `https://github.com/Hmbown/CodeWhale/releases`。手动下载时请校验
 > SHA-256 manifest，并避免相似仓库名或搜索结果里的镜像站。详见
 > [下载安全与校验](docs/INSTALL.md#2-download-safety-and-checksums)。
+>
+> macOS Gatekeeper：用浏览器手动下载时，可能会提示“Apple 无法验证”。
+> 这时可清理二进制的隔离属性：
+> `xattr -d com.apple.quarantine ~/.local/bin/codewhale ~/.local/bin/codewhale-tui`。
 
 已经安装过？按你的安装方式更新：
 

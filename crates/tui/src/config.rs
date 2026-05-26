@@ -411,12 +411,24 @@ fn canonical_official_deepseek_model_id(model: &str) -> Option<&'static str> {
 /// aliases are valid for some compatible backends, but sending them to
 /// DeepSeek's own API causes a 400. Keep the generic normalizer permissive for
 /// config/back-compat, and canonicalize only when the active provider is known.
+///
+/// Preserves the caller's casing when the model is already a recognised
+/// DeepSeek id (e.g. `DeepSeek-V4-Flash` stays as-is). Only rewrites compact
+/// aliases like `deepseek-v4pro` → `deepseek-v4-pro`.
 #[must_use]
 pub fn normalize_model_name_for_provider(provider: ApiProvider, model: &str) -> Option<String> {
     let normalized = normalize_model_name(model)?;
     if matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN)
         && let Some(canonical) = canonical_official_deepseek_model_id(&normalized)
     {
+        // When the user's input already matches a known model id
+        // case-insensitively, keep their original casing; only rewrite
+        // compact aliases (e.g. v4pro → v4-pro).
+        if canonical.eq_ignore_ascii_case(&normalized)
+            || normalized.to_ascii_lowercase() == canonical
+        {
+            return Some(normalized);
+        }
         return Some(canonical.to_string());
     }
     if let Some(canonical) = canonical_official_deepseek_model_id(&normalized) {

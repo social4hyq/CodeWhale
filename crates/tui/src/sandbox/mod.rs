@@ -739,4 +739,108 @@ mod tests {
         #[cfg(target_os = "macos")]
         assert_eq!(format!("{}", SandboxType::MacosSeatbelt), "macos-seatbelt");
     }
+
+    // ── Parity tests (#2187) ──────────────────────────────────────────────
+
+    #[test]
+    fn test_parity_platform_sandbox_detection() {
+        let sandbox_type = get_platform_sandbox();
+        let available = is_sandbox_available();
+        if available {
+            assert!(sandbox_type.is_some());
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn test_parity_macos_seatbelt_available() {
+        let st = get_platform_sandbox();
+        assert!(matches!(st, Some(SandboxType::MacosSeatbelt)));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_parity_linux_landlock_available() {
+        let st = get_platform_sandbox();
+        assert!(matches!(st, Some(SandboxType::LinuxLandlock)));
+    }
+
+    #[test]
+    fn test_parity_denial_zero_exit_never_denied() {
+        assert!(!SandboxManager::was_denied(SandboxType::None, 0, "anything"));
+        #[cfg(target_os = "macos")]
+        assert!(!SandboxManager::was_denied(SandboxType::MacosSeatbelt, 0, ""));
+        #[cfg(target_os = "linux")]
+        assert!(!SandboxManager::was_denied(SandboxType::LinuxLandlock, 0, ""));
+        #[cfg(target_os = "windows")]
+        assert!(!SandboxManager::was_denied(SandboxType::Windows, 0, ""));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_parity_seccomp_sigsys_detected() {
+        assert!(SandboxManager::was_denied(SandboxType::LinuxLandlock, 31, ""));
+        assert!(SandboxManager::was_denied(
+            SandboxType::LinuxLandlock, 1, "Bad system call"
+        ));
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn test_parity_seatbelt_file_write_detected() {
+        // Seatbelt patterns use "Sandbox: <cmd> denied <operation>" format.
+        assert!(SandboxManager::was_denied(
+            SandboxType::MacosSeatbelt, 1, "Sandbox: ls denied file-write*"
+        ));
+        assert!(SandboxManager::was_denied(
+            SandboxType::MacosSeatbelt, 1, "Operation not permitted"
+        ));
+    }
+
+    #[test]
+    fn test_parity_manager_default_no_bwrap() {
+        let manager = SandboxManager::default();
+        let spec = CommandSpec::shell("true", PathBuf::from("/tmp"), Duration::from_secs(5))
+            .with_policy(SandboxPolicy::default());
+        let env = manager.prepare(&spec);
+        #[cfg(target_os = "linux")]
+        {
+            let marker = env.env.get("DEEPSEEK_SANDBOX");
+            assert!(marker.map_or(true, |v| v != "bwrap"));
+        }
+        let _ = env;
+    }
+
+    #[test]
+    fn test_parity_manager_with_bwrap() {
+        let manager = SandboxManager::with_bwrap_preference(true);
+        let spec = CommandSpec::shell("true", PathBuf::from("/tmp"), Duration::from_secs(5))
+            .with_policy(SandboxPolicy::default());
+        let env = manager.prepare(&spec);
+        #[cfg(target_os = "linux")]
+        {
+            if crate::sandbox::bwrap::is_available() {
+                let marker = env.env.get("DEEPSEEK_SANDBOX");
+                assert_eq!(marker.map(String::as_str), Some("bwrap"));
+            }
+        }
+        let _ = env;
+    }
+
+    #[test]
+    fn test_parity_exec_env_for_all_policies() {
+        let manager = SandboxManager::new();
+        let policies = [
+            SandboxPolicy::DangerFullAccess,
+            SandboxPolicy::ReadOnly,
+            SandboxPolicy::workspace_with_network(),
+            SandboxPolicy::default(),
+        ];
+        for policy in &policies {
+            let spec = CommandSpec::shell("true", PathBuf::from("/tmp"), Duration::from_secs(5))
+                .with_policy(policy.clone());
+            let env = manager.prepare(&spec);
+            assert_eq!(env.policy, *policy);
+        }
+    }
 }

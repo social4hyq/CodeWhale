@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`CODEWHALE_*` env aliases.** `CODEWHALE_PROVIDER`, `CODEWHALE_MODEL`,
+  and `CODEWHALE_BASE_URL` are public product-scoped aliases that take
+  precedence over the legacy `DEEPSEEK_*` forms. The `DEEPSEEK_*` names
+  remain accepted for back-compat. Recommended setup paths are
+  `codewhale --provider <name>`, `provider = "<name>"` in
+  `~/.codewhale/config.toml`, or `CODEWHALE_PROVIDER=<name>`.
+
+### Changed
+
+- **DeepSeek-first focus.** v0.8.45.x refocuses on delivering the
+  highest-quality experience on DeepSeek first. The project's broader
+  goal remains to become a strong harness for open-source and open-weight
+  coding models, but additional first-class provider paths are planned
+  for v0.9.0 after the core DeepSeek workflow is solid.
+
 ## [0.8.45] - 2026-05-25
 
 ### Added
@@ -14,6 +31,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **RLM session objects.** `rlm_open` can now load `session://` refs,
   exposing the active prompt, history, and session data as symbolic objects
   inside RLM REPLs (#2047).
+- **Command palette voice input.** The command palette can launch a configured
+  speech-to-text helper and show footer status while transcription runs
+  (#2047).
+- **Moonshot/Kimi provider.** Moonshot/Kimi is now a first-class provider,
+  including API-key auth, model completion, CLI auth, secret-store
+  integration, and optional Kimi CLI credential reuse.
 - **Deterministic whale-species sub-agent names.** Sub-agents now get stable,
   human-readable whale-species nicknames (e.g. "Beluga", "Orca") while
   preserving the raw agent ID in the popup (#2035, #2016).
@@ -52,6 +75,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Thanks @reidliu41 (#2143).
 - **Model picker selection survives Esc.** Dismissing the model picker with Esc
   no longer loses the highlighted selection. Thanks @reidliu41 (#2056).
+- **Moonshot/Kimi sessions launch from the dispatcher.** The `codewhale`
+  wrapper now includes Moonshot/Kimi in the TUI provider allowlist, so
+  `codewhale --provider moonshot --model kimi-k2.6` reaches the TUI instead of
+  stopping after config resolution.
 - **Slash recovery no longer restores command tails in the composer.**
   Resuming a session or recovering from a crash no longer leaves stale
   slash-command text (e.g. `/sessions`) in the composer input (#2047, #2032).

@@ -7,6 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.46] - 2026-05-26
+
+### Added
+
+- **`CODEWHALE_*` env aliases.** `CODEWHALE_PROVIDER`, `CODEWHALE_MODEL`,
+  and `CODEWHALE_BASE_URL` are public product-scoped aliases that take
+  precedence over the legacy `DEEPSEEK_*` forms. The `DEEPSEEK_*` names
+  remain accepted for back-compat.
+- **Platform archive bundles.** Release artifacts now ship as per-platform
+  archives (`tar.gz` for Linux/macOS, `.zip` for Windows) containing both
+  `codewhale` and `codewhale-tui` binaries plus an install script. No more
+  downloading two loose files and guessing which ones to pick (#2193).
+- **Windows portable archive.** `codewhale-windows-x64-portable.zip` ships
+  the two binaries without an install script for USB-stick distribution
+  (#2193).
+- **Web install download tile.** The website install page now shows a
+  platform-aware download tile with arch detection, SHA256 checksum
+  display, and China mirror links, instead of burying the download behind
+  the Cargo instructions (#2192).
+- **Whale dark palette refresh.** Better contrast and layer separation
+  across the TUI color scheme (#2197).
+- **Auto-collapse finished sub-agents.** Completed sub-agent sessions now
+  collapse automatically in the sidebar, reducing noise during long
+  sessions (#2195).
+- **Shell-running status chip.** A `⏳ shell running` chip appears in the
+  TUI footer while background shell tasks are active (#2194).
+- **Sandbox process hardening (Linux).** `PR_SET_DUMPABLE=0`,
+  `NO_NEW_PRIVS`, and `RLIMIT_CORE=0` are applied at shell startup to
+  harden child processes against inspection and privilege escalation
+  (#2183).
+- **CONTRIBUTING.md cross-links.** Issue and PR templates are now
+  cross-linked from CONTRIBUTING.md to improve contributor onboarding
+  (#2203).
+
+### Changed
+
+- **DeepSeek-first focus.** v0.8.46 refocuses on delivering the
+  highest-quality experience on DeepSeek first. Additional first-class
+  provider paths are planned for v0.9.0 after the core DeepSeek workflow
+  is solid.
+
+### Fixed
+
+- **Model name casing preserved.** `normalize_model_name_for_provider` no
+  longer lowercases user-set model names such as `DeepSeek-V4-Flash`,
+  preventing API lookup failures on case-sensitive backends (#2109).
+- **Esc in model picker applies selection.** Dismissing the model picker
+  with Esc now applies the last-highlighted choice instead of reverting
+  (#2196).
+- **Web install downloads both binaries.** The `install-binary.tsx`
+  snippet now fetches both `codewhale` and `codewhale-tui`, fixing the
+  `MISSING_COMPANION_BINARY` trap on fresh npm installs (#2191).
+- **`grep_files` skips large directories.** The pure-Rust search tool
+  now skips known-large directories (`.git`, `node_modules`, `target`)
+  before walking, preventing hangs on deep or slow filesystems.
+- **Version-update hint uses semver.** The update notification in the
+  footer now compares versions semantically instead of lexicographically,
+  so `0.8.10 > 0.8.9` is recognized correctly.
+- **CVE-2026-8723 in feishu-bridge.** Bumped `qs` to `>=6.15.2` in the
+  Feishu bridge integration (#2198).
+
 ## [0.8.45] - 2026-05-25
 
 ### Added
@@ -14,6 +75,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **RLM session objects.** `rlm_open` can now load `session://` refs,
   exposing the active prompt, history, and session data as symbolic objects
   inside RLM REPLs (#2047).
+- **Command palette voice input.** The command palette can launch a configured
+  speech-to-text helper and show footer status while transcription runs
+  (#2047).
+- **Moonshot/Kimi provider.** Moonshot/Kimi is now a first-class provider,
+  including API-key auth, model completion, CLI auth, secret-store
+  integration, and optional Kimi CLI credential reuse.
 - **Deterministic whale-species sub-agent names.** Sub-agents now get stable,
   human-readable whale-species nicknames (e.g. "Beluga", "Orca") while
   preserving the raw agent ID in the popup (#2035, #2016).
@@ -52,6 +119,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Thanks @reidliu41 (#2143).
 - **Model picker selection survives Esc.** Dismissing the model picker with Esc
   no longer loses the highlighted selection. Thanks @reidliu41 (#2056).
+- **Moonshot/Kimi sessions launch from the dispatcher.** The `codewhale`
+  wrapper now includes Moonshot/Kimi in the TUI provider allowlist, so
+  `codewhale --provider moonshot --model kimi-k2.6` reaches the TUI instead of
+  stopping after config resolution.
 - **Slash recovery no longer restores command tails in the composer.**
   Resuming a session or recovering from a crash no longer leaves stale
   slash-command text (e.g. `/sessions`) in the composer input (#2047, #2032).

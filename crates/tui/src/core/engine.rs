@@ -7,8 +7,8 @@
 //! - Proper cancellation support
 //! - Tool execution orchestration
 
-use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex as StdMutex};
@@ -164,7 +164,8 @@ pub struct EngineConfig {
     pub workshop: Option<crate::tools::large_output_router::WorkshopConfig>,
     /// Which search backend `web_search` should use. Default: Bing.
     pub search_provider: crate::config::SearchProvider,
-    /// API key for Tavily or Bocha. `None` for Bing or DuckDuckGo.
+    /// API key for Tavily, Bocha, or Metaso. `None` for Bing or DuckDuckGo.
+    /// Metaso also falls back to `METASO_API_KEY` env var, then a built-in key.
     pub search_api_key: Option<String>,
     /// Per-step DeepSeek API timeout for sub-agent `create_message` requests.
     /// Resolved from `[subagents] api_timeout_secs` (clamped to 1..=1800)
@@ -174,6 +175,13 @@ pub struct EngineConfig {
     /// Typed permission rules used before falling back to the legacy approval
     /// prompt path for shell and file tools.
     pub exec_policy_engine: codewhale_execpolicy::ExecPolicyEngine,
+    /// Native tools that should stay in the model-visible catalog even when
+    /// they are outside the small default core surface (#2076).
+    pub tools_always_load: HashSet<String>,
+    /// When true and `/usr/bin/bwrap` is present on Linux, route exec_shell
+    /// through bubblewrap instead of relying solely on Landlock (#2184).
+    #[allow(dead_code)] // Wired through ShellManager in follow-up PR
+    pub prefer_bwrap: bool,
 }
 
 impl Default for EngineConfig {
@@ -218,6 +226,8 @@ impl Default for EngineConfig {
                 crate::config::DEFAULT_SUBAGENT_API_TIMEOUT_SECS,
             ),
             exec_policy_engine: codewhale_execpolicy::ExecPolicyEngine::default(),
+            tools_always_load: HashSet::new(),
+            prefer_bwrap: false,
         }
     }
 }
@@ -1129,7 +1139,12 @@ impl Engine {
             Vec::new()
         };
         let tools = tool_registry.as_ref().map(|registry| {
-            build_model_tool_catalog(registry.to_api_tools_with_cache(true), mcp_tools, mode)
+            build_model_tool_catalog(
+                registry.to_api_tools_with_cache(true),
+                mcp_tools,
+                mode,
+                &self.config.tools_always_load,
+            )
         });
 
         // Main turn loop

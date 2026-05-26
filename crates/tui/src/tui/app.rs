@@ -993,6 +993,11 @@ pub struct SessionState {
     pub last_reasoning_replay_tokens: Option<u32>,
     pub total_tokens: u32,
     pub total_conversation_tokens: u32,
+    /// Accumulated token breakdown for the session.
+    pub total_input_tokens: u32,
+    pub total_cache_hit_tokens: u32,
+    pub total_cache_miss_tokens: u32,
+    pub total_output_tokens: u32,
     pub turn_cache_history: VecDeque<TurnCacheRecord>,
     pub last_cache_inspection: Option<PromptInspection>,
 }
@@ -1030,9 +1035,23 @@ impl Default for SessionState {
             last_reasoning_replay_tokens: None,
             total_tokens: 0,
             total_conversation_tokens: 0,
+            total_input_tokens: 0,
+            total_cache_hit_tokens: 0,
+            total_cache_miss_tokens: 0,
+            total_output_tokens: 0,
             turn_cache_history: VecDeque::new(),
             last_cache_inspection: None,
         }
+    }
+}
+
+impl SessionState {
+    /// Reset the accumulated token breakdown fields to zero.
+    pub fn reset_token_breakdown(&mut self) {
+        self.total_input_tokens = 0;
+        self.total_cache_hit_tokens = 0;
+        self.total_cache_miss_tokens = 0;
+        self.total_output_tokens = 0;
     }
 }
 
@@ -1076,6 +1095,10 @@ pub struct App {
     pub status_toasts: VecDeque<StatusToast>,
     /// Sticky status toast used for important warnings/errors.
     pub sticky_status: Option<StatusToast>,
+    /// Version-update hint shown in the footer when a newer release
+    /// is available. Set by a background GitHub API check after app
+    /// startup; `None` until the check completes or if up-to-date.
+    pub version_hint: Option<String>,
     /// Last status text already promoted from `status_message` into toast state.
     pub last_status_message_seen: Option<String>,
     pub model: String,
@@ -1557,8 +1580,8 @@ fn default_composer_arrows_scroll(use_mouse_capture: bool) -> bool {
     default_composer_arrows_scroll_for_platform(use_mouse_capture, cfg!(windows))
 }
 
-fn default_composer_arrows_scroll_for_platform(use_mouse_capture: bool, is_windows: bool) -> bool {
-    is_windows || !use_mouse_capture
+fn default_composer_arrows_scroll_for_platform(use_mouse_capture: bool, _is_windows: bool) -> bool {
+    !use_mouse_capture
 }
 
 impl App {
@@ -1801,6 +1824,7 @@ impl App {
             status_message: None,
             status_toasts: VecDeque::new(),
             sticky_status: None,
+            version_hint: None,
             last_status_message_seen: None,
             model,
             auto_model,
@@ -3128,7 +3152,7 @@ impl App {
         // safety-net at submit time so any other code path that fills
         // self.input above the cap still consolidates rather than
         // silently truncating.
-        self.consolidate_large_input_if_oversized();
+        // self.consolidate_large_input_if_oversized(); // deferred to submit time
     }
 
     pub fn insert_media_attachment(&mut self, kind: &str, path: &Path, description: Option<&str>) {
@@ -4255,7 +4279,7 @@ impl App {
         self.input = format!("@{rel_path}");
         self.cursor_position = char_count(&self.input);
         self.push_status_toast(
-            "Large paste consolidated — sent as @mention",
+            "Large paste consolidated — auto-wrote to file and replaced with @mention. The text is still fully accessible to the model.",
             StatusToastLevel::Info,
             Some(5_000),
         );
@@ -4730,8 +4754,13 @@ mod tests {
     }
 
     #[test]
-    fn composer_arrows_scroll_default_is_true_on_windows_even_with_mouse_capture() {
-        assert!(default_composer_arrows_scroll_for_platform(true, true));
+    fn composer_arrows_scroll_default_is_false_with_mouse_capture_on_windows() {
+        assert!(!default_composer_arrows_scroll_for_platform(true, true));
+    }
+
+    #[test]
+    fn composer_arrows_scroll_default_is_true_without_mouse_capture_on_windows() {
+        assert!(default_composer_arrows_scroll_for_platform(false, true));
     }
 
     #[test]

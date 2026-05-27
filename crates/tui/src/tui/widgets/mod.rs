@@ -1438,21 +1438,6 @@ fn approval_palette(risk: RiskLevel) -> ApprovalColors {
     }
 }
 
-fn approval_selected_style() -> Style {
-    Style::default()
-        .fg(palette::SELECTION_TEXT)
-        .bg(palette::DEEPSEEK_BLUE)
-        .add_modifier(Modifier::BOLD)
-}
-
-fn approval_option_style(is_selected: bool, color: Color) -> Style {
-    if is_selected {
-        approval_selected_style()
-    } else {
-        Style::default().fg(color)
-    }
-}
-
 fn risk_badge_text(risk: RiskLevel, locale: Locale) -> &'static str {
     match (locale, risk) {
         (Locale::ZhHans, RiskLevel::Benign) => "审查",
@@ -1758,20 +1743,6 @@ fn diff_hidden_hint(locale: Locale) -> &'static str {
     match locale {
         Locale::ZhHans => "终端高度不足，按 v 查看",
         _ => "preview hidden — press v",
-    }
-}
-
-fn selection_hint_prefix(locale: Locale) -> &'static str {
-    match locale {
-        Locale::ZhHans => "选择：",
-        _ => "Choose: ",
-    }
-}
-
-fn selection_hint_value(locale: Locale) -> &'static str {
-    match locale {
-        Locale::ZhHans => "Enter 执行选中项，或直接按 y/a/d",
-        _ => "Enter selected option, or press y/a/d directly",
     }
 }
 

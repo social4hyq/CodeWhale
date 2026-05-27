@@ -257,8 +257,8 @@ fn parse_pages_arg(spec: &str) -> Option<(u32, u32)> {
 }
 
 /// Clean PDF-extracted text for TUI display: collapse consecutive blank
-/// lines (more than 1 becomes 1), strip NUL bytes, replace non-breaking
-/// spaces with regular spaces, and trim trailing whitespace on each line.
+/// lines (more than 1 becomes 1), replace NUL bytes with U+FFFD, replace
+/// non-breaking spaces with regular spaces, and trim trailing whitespace on each line.
 /// Produces output that won't clutter the transcript with vertical gaps
 /// or invisible control characters.
 fn clean_pdf_text(raw: &str) -> String {
@@ -1269,7 +1269,7 @@ mod tests {
     }
 
     #[test]
-    fn clean_pdf_text_strips_nul_bytes() {
+    fn clean_pdf_text_replaces_nul_bytes_with_replacement_char() {
         let raw = "hello\0world";
         let cleaned = super::clean_pdf_text(raw);
         assert!(!cleaned.contains('\0'));

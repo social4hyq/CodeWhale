@@ -41,7 +41,7 @@ const tracksEn = [
     items: [
       { title: "VS Code extension", note: "Scaffold, local runtime detection, chat webview — first external editor surface (#461–#463)" },
       { title: "Memory typed store", note: "SQLite + FTS5 backend with graph-structured agent memory and multi-signal recall (#534–#536)" },
-      { title: "Feishu / Lark bot", note: "Chat-platform frontend over the existing runtime API (#757)" },
+      { title: "Telegram + Feishu / Lark bots", note: "Telegram/Railway for US-hosted workers; Feishu/Lark over Tencent Lighthouse/CNB for China-first setups (#757)" },
       { title: "Chinese-market & i18n", note: "Locale-aware UI, platform refinements, region-specific search backends (#755)" },
       { title: "Hugging Face model discovery + Model Lab", note: "Browse, download, and manage models from Hugging Face Hub directly in the TUI" },
       { title: "Model Lab provider polish", note: "Improve Hugging Face discovery, deprecated-provider migration, and hosted/open-model defaults without breaking existing configs" },
@@ -142,7 +142,7 @@ const tracksZh = [
     color: "indigo",
     items: [
       { title: "社区模型注册中心", note: "发现、分享和评价社区微调模型，附带可复现的配方" },
-      { title: "一键部署", note: "美国托管优先走 Railway，然后再扩展到 RunPod、Replicate 或自有基础设施" },
+      { title: "一键部署", note: "中文/国内路径优先腾讯云 Lighthouse + CNB + 飞书；美国托管路径走 Railway" },
       { title: "模型基准测试面板", note: "跨提供商、量化级别和硬件的透明、可复现基准测试" },
     ],
   },

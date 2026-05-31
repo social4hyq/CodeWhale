@@ -14,6 +14,7 @@ This release bundles the work that was prepared on the v0.8.47 integration branc
 - **Xiaomi MiMo provider.** First-class support for Xiaomi's MiMo models via `MIMO_API_KEY` / `MIMO_BASE_URL`, with per-provider model picker entries and reasoning-effort translation across off/high/max tiers (#2240, contributed by HUQIANTAO).
 - **`~/.agents/AGENTS.md` vendor-neutral global fallback.** Global agent instructions can now live at this vendor-neutral path between `~/.codewhale/` and `~/.deepseek/` (#2236, contributed by mvanhorn).
 - **WHALE.md as project-context file.** Adopted as the CodeWhale-native convention alongside `AGENTS.md` and `CLAUDE.md`.
+- **Telegram remote bridge and Railway worker.** Added a zero-dependency Telegram long-polling bridge plus a root Railway worker config that keeps `codewhale serve --http` private on loopback while exposing Telegram as the control surface.
 
 ### Changed
 

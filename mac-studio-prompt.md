@@ -69,8 +69,22 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol
 - US-facing web deployment should start with Railway using `web/railway.json`.
   Keep Cloudflare as the edge/cron/KV route until the curator storage path is
   replaced.
+- US/global remote-agent deployment now has a separate root Railway worker:
+  `railway.json` plus `deploy/railway/`. It runs `codewhale serve --http` on
+  loopback and the Telegram bridge in the same private container. Do not expose
+  `/v1/*` publicly.
+- China-facing docs should stay Tencent/CNB/Lighthouse/Feishu-first. Do not
+  make the Chinese README lead with Railway/Telegram.
 - 0.9.0 whale-pods work should stay next-cycle scope, not a late v0.8.48
   release add-on.
+- This handoff is a bounded restart point, not an instruction to continue an
+  open-ended goal loop. Work in explicit PR-harvest batches.
+- The SSD checkout was pruned before handoff: `target/`, `node_modules/`,
+  `web/.next`, `web/.open-next`, old in-repo `.worktrees/`, and clean external
+  worktrees were removed. Expect the first Rust/web build on the Mac Studio to
+  rebuild dependencies. Two external worktrees were intentionally preserved
+  because they contain uncommitted work: `../codewhale-v0.8.48` and
+  `../codewhale-v0.9-pod-mode`.
 
 The original private handoff file contained machine-local setup details and
 credential-adjacent notes. Keep it out of git history.
@@ -86,6 +100,10 @@ possible" as:
    too broad, missing tests, or mixed with scratch files.
 3. Defer only when the PR is clearly v0.9.0 scope, unsafe, unreviewable, or
    blocked on secrets/live provider access.
+
+The maintainer priority is community respect: every PR should receive either a
+merge, a harvested patch with credit, or a clear defer/close explanation. Avoid
+letting useful contributions disappear just because a branch is messy.
 
 Start by refreshing state rather than relying on this file:
 
@@ -123,6 +141,25 @@ Known community queue seed from the laptop session, to refresh on Mac Studio:
   `#2278`, `#2277`, `#2276`, `#2274`.
 - Draft/stacked/broad PRs should be harvested only when the patch is clean and
   releasable; otherwise keep them for v0.9.0.
+
+Use sub-agents to divide the queue before touching code:
+
+- Agent A, small fixes/docs/tests: dependency bumps, docs/readme/site drift,
+  locale copy, tiny panic/test/isolation fixes.
+- Agent B, provider/model/runtime: provider additions, model picker behavior,
+  auth/config/env changes, live-provider issues that can be validated without
+  secrets.
+- Agent C, TUI/UX/input: composer, slash commands, statusline, theme, terminal,
+  history, scroll, and accessibility PRs.
+- Agent D, integrations/remote: MCP, app-server/runtime API, Telegram/Feishu,
+  Railway/Tencent deploy, web admin/curator changes.
+- Agent E, v0.9/defer bucket: whale pods, broad architecture, new product
+  surfaces, PRs needing maintainer design decisions or live credentials.
+
+Have each sub-agent return a table with: PR number, contributor, category,
+recommended action (`merge-now`, `harvest`, `defer`, `close-after-harvest`),
+files touched, validation required, and exact credit line to add if accepted.
+Then merge/harvest in small batches so CI failures stay attributable.
 
 Suggested loop for every PR:
 
@@ -195,6 +232,14 @@ Paste this into a fresh CodeWhale session after the rebuild:
 
 ```text
 Use parallel sub-agents. Agent A: inspect this checkout for v0.8.48 release/docs drift around `.codewhale` vs `.deepseek` paths and provider lists. Agent B: inspect release artifact/npm wrapper paths for missing assets, especially Windows `codewhale.bat` and updater hints. Agent C: inspect runtime liveness risks around sub-agent fanout, compaction/status UI, and MCP tool discovery. Do not edit files. Return a release-risk table with exact file references, confidence, and one recommended follow-up test.
+```
+
+## Community PR Swarm Prompt
+
+Use this as the main restart prompt when the Mac Studio is ready:
+
+```text
+We are preparing CodeWhale v0.8.48 and the main goal is to honor community work. Refresh all open PRs/issues from GitHub, then use parallel sub-agents to classify every open PR into merge-now, harvest, defer, or close-after-harvest. Merge clean release-safe PRs directly when possible. For messy but valuable PRs, harvest the smallest correct patch locally, preserve contributor credit in CHANGELOG/release notes, and prepare a respectful PR comment explaining what shipped. Defer only when the PR is truly v0.9.0 scope, unsafe, unreviewable, or blocked on secrets/live-provider access. Return a batch plan first, grouped by docs/tests, providers/runtime, TUI/UX, integrations/deploy, and v0.9/defer. Do not publish v0.8.48 until PR #2382 CI is green, credits are direct in the GitHub Release body, and the full release gates pass.
 ```
 
 ## Current Release Notes

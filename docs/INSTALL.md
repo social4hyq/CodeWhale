@@ -176,6 +176,21 @@ registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"
 `rsproxy`, Tencent COS, and Aliyun OSS mirrors work the same way; pick whichever
 is fastest from your network.
 
+### Railway Telegram worker
+
+For an always-on CodeWhale workspace controlled from Telegram, use the
+Railway-first worker instead of exposing the runtime API publicly:
+
+- Railway project: `codewhale`
+- Worker config: root [`railway.json`](../railway.json)
+- Docker/start scripts: [`deploy/railway/`](../deploy/railway/)
+- Telegram bridge: [`integrations/telegram-bridge/`](../integrations/telegram-bridge/)
+
+The worker runs `codewhale serve --http` on `127.0.0.1` and the Telegram
+long-polling bridge in the same container. Set `TELEGRAM_BOT_TOKEN`,
+`CODEWHALE_RUNTIME_TOKEN`, a provider API key, and
+`CODEWHALE_CHAT_ALLOWLIST` in Railway variables.
+
 ### Tencent Cloud remote-first setup
 
 For an always-on workspace that can be controlled from a phone, use the

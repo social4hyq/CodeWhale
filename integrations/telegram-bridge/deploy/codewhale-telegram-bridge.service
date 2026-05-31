@@ -1,0 +1,30 @@
+# Cloud-agnostic systemd unit for the CodeWhale Telegram bridge.
+# Works on Railway-style Linux workers, Tencent Lighthouse, or bare metal. Pair it with
+# the codewhale-runtime.service unit that runs `codewhale serve --http`.
+#
+# Install:
+#   sudo cp deploy/codewhale-telegram-bridge.service /etc/systemd/system/
+#   sudo cp .env.example /etc/codewhale/telegram-bridge.env   # then edit secrets
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now codewhale-runtime codewhale-telegram-bridge
+[Unit]
+Description=CodeWhale Telegram Phone Bridge
+Wants=network-online.target codewhale-runtime.service
+After=network-online.target codewhale-runtime.service
+
+[Service]
+Type=simple
+User=codewhale
+Group=codewhale
+WorkingDirectory=/opt/codewhale/telegram-bridge
+EnvironmentFile=/etc/codewhale/telegram-bridge.env
+ExecStart=/usr/bin/node /opt/codewhale/telegram-bridge/src/index.mjs
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/var/lib/codewhale-telegram-bridge
+
+[Install]
+WantedBy=multi-user.target

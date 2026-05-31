@@ -206,6 +206,14 @@ keys take precedence over the keyring and environment and are easier to rotate.
 
 > To rotate or remove a saved key: `codewhale auth clear --provider deepseek`.
 
+### Railway / Telegram Remote Agent
+
+For a US-hosted always-on worker you can control from Telegram, start with the
+root Railway config. It builds the Rust binaries, runs `codewhale serve --http`
+on `127.0.0.1`, and starts the Telegram long-polling bridge in the same private
+container. See [deploy/railway/README.md](deploy/railway/README.md) and
+[integrations/telegram-bridge/README.md](integrations/telegram-bridge/README.md).
+
 ### Tencent Cloud / CNB Remote-First Path
 
 For an always-on workspace you can control from a phone, use the Tencent-native
@@ -590,6 +598,8 @@ without recreating skills the user deliberately deleted.
 | [RUNTIME_API.md](docs/RUNTIME_API.md) | HTTP/SSE API server |
 | [INSTALL.md](docs/INSTALL.md) | Platform-specific install guide |
 | [DOCKER.md](docs/DOCKER.md) | GHCR image, volumes, and Docker usage |
+| [deploy/railway/README.md](deploy/railway/README.md) | Railway Telegram worker setup |
+| [integrations/telegram-bridge/README.md](integrations/telegram-bridge/README.md) | Telegram phone bridge |
 | [CNB_MIRROR.md](docs/CNB_MIRROR.md) | CNB mirror and China-friendly install notes |
 | [TENCENT_CLOUD_REMOTE_FIRST.md](docs/TENCENT_CLOUD_REMOTE_FIRST.md) | Tencent/CNB/Lighthouse/Feishu remote-first path |
 | [TENCENT_LIGHTHOUSE_HK.md](docs/TENCENT_LIGHTHOUSE_HK.md) | Lighthouse Hong Kong server setup |

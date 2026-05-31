@@ -12,6 +12,9 @@
 
 # Development
 /node_modules/
+**/node_modules/
+**/.next/
+**/.open-next/
 /.vscode/
 /.idea/
 *.swp
@@ -43,23 +46,20 @@ venv/
 
 # Local runtime state
 /.deepseek/
+/.codewhale/
+/.private/
+/.worktrees/
+/.wrangler/
+/web/.wrangler/
 
 # Claude Code artifacts
 /.claude/
 /.ace-tool/
+/.codex/
 
-# Documentation (not needed at runtime)
-/docs/
-/website/
-/*.md
-!/README.md
-!/CHANGELOG.md
-
-# Assets (screenshots, etc.)
-/assets/
-
-# Scripts
-/scripts/
+# Documentation, assets, and scripts are intentionally kept in the Docker
+# context. The Railway agent image seeds a working checkout from the image when
+# no runtime clone is configured, so those files are part of the workspace.
 
 # Development configs
 /.devcontainer/

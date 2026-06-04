@@ -3232,6 +3232,14 @@ async fn run_event_loop(
                 {
                     continue;
                 }
+                KeyCode::Enter
+                    if key.modifiers == KeyModifiers::NONE
+                        && app.input.is_empty()
+                        && detail_target_cell_index(app)
+                            .is_some_and(|idx| app.toggle_tool_run_expansion_at(idx)) =>
+                {
+                    continue;
+                }
                 KeyCode::Char('l')
                     if key_shortcuts::alt_nav_modifiers(key.modifiers)
                         && app.input.is_empty()
@@ -3259,6 +3267,9 @@ async fn run_event_loop(
                     if key.modifiers == KeyModifiers::NONE && app.input.is_empty() =>
                 {
                     if let Some(idx) = detail_target_cell_index(app) {
+                        if app.toggle_tool_run_expansion_at(idx) {
+                            continue;
+                        }
                         let is_thinking = app
                             .history
                             .get(idx)
@@ -8286,7 +8297,7 @@ fn jump_to_adjacent_tool_cell(app: &mut App, direction: SearchDirection) -> bool
     let current_cell = line_meta
         .get(top)
         .and_then(crate::tui::scrolling::TranscriptLineMeta::cell_line)
-        .map(|(cell_index, _)| cell_index);
+        .map(|(cell_index, _)| app.original_cell_index_for_rendered(cell_index));
 
     let mut scan_indices = Vec::new();
     match direction {
@@ -8302,6 +8313,7 @@ fn jump_to_adjacent_tool_cell(app: &mut App, direction: SearchDirection) -> bool
         let Some((cell_index, _)) = line_meta[idx].cell_line() else {
             continue;
         };
+        let cell_index = app.original_cell_index_for_rendered(cell_index);
         if current_cell.is_some_and(|current| current == cell_index) {
             continue;
         }
@@ -8579,7 +8591,7 @@ fn selected_transcript_cell_index(app: &App) -> Option<usize> {
                 .line_meta()
                 .get(start.line_index)
                 .and_then(|meta| meta.cell_line())
-                .map(|(cell_index, _)| cell_index)
+                .map(|(cell_index, _)| app.original_cell_index_for_rendered(cell_index))
         })
 }
 
@@ -9124,7 +9136,7 @@ fn detail_target_cell_index(app: &App) -> Option<usize> {
             .line_meta()
             .get(start.line_index)
             .and_then(|meta| meta.cell_line())
-            .map(|(cell_index, _)| cell_index);
+            .map(|(cell_index, _)| app.original_cell_index_for_rendered(cell_index));
     }
 
     app.detail_cell_index_for_viewport(
@@ -9171,6 +9183,7 @@ fn activity_footer_target_cell_index(app: &App) -> Option<usize> {
         let Some((cell_index, _)) = meta.cell_line() else {
             continue;
         };
+        let cell_index = app.original_cell_index_for_rendered(cell_index);
         if app
             .cell_at_virtual_index(cell_index)
             .is_some_and(is_meaningful_activity_cell)

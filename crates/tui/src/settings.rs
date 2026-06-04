@@ -203,6 +203,8 @@ pub struct Settings {
     pub auto_compact_threshold_percent: f64,
     /// Reduce status noise and collapse details more aggressively
     pub calm_mode: bool,
+    /// Dense tool-run collapse mode: compact, expanded, or calm.
+    pub tool_collapse_mode: String,
     /// Streaming pacing mode. `true` pins the chunker to one-character-per-
     /// commit-tick (typewriter); `false` drains the upstream cadence (each
     /// commit flushes everything queued, which matches V4-pro's burst pattern
@@ -330,6 +332,7 @@ impl Default for Settings {
             auto_compact: false,
             auto_compact_threshold_percent: 80.0,
             calm_mode: false,
+            tool_collapse_mode: "compact".to_string(),
             low_motion: false,
             fancy_animations: true,
             bracketed_paste: true,
@@ -401,6 +404,7 @@ impl Settings {
             s.default_mode = normalize_mode(&s.default_mode).to_string();
             s.composer_density = normalize_composer_density(&s.composer_density).to_string();
             s.transcript_spacing = normalize_transcript_spacing(&s.transcript_spacing).to_string();
+            s.tool_collapse_mode = normalize_tool_collapse_mode(&s.tool_collapse_mode).to_string();
             s.sidebar_focus = normalize_sidebar_focus(&s.sidebar_focus).to_string();
             s.status_indicator = normalize_status_indicator(&s.status_indicator).to_string();
             s.synchronized_output =
@@ -564,6 +568,15 @@ impl Settings {
             }
             "calm_mode" | "calm" => {
                 self.calm_mode = parse_bool(value)?;
+            }
+            "tool_collapse" | "tool_collapse_mode" | "collapse" => {
+                let normalized = normalize_tool_collapse_mode(value);
+                if !matches!(normalized, "compact" | "expanded" | "calm") {
+                    return Err(anyhow::anyhow!(
+                        "Failed to update setting: invalid tool collapse mode '{value}'. Expected: compact, expanded, or calm."
+                    ));
+                }
+                self.tool_collapse_mode = normalized.to_string();
             }
             "low_motion" | "motion" => {
                 self.low_motion = parse_bool(value)?;
@@ -774,6 +787,7 @@ impl Settings {
             self.auto_compact_threshold_percent
         ));
         lines.push(format!("  calm_mode:          {}", self.calm_mode));
+        lines.push(format!("  tool_collapse:      {}", self.tool_collapse_mode));
         lines.push(format!("  low_motion:         {}", self.low_motion));
         lines.push(format!("  fancy_animations:   {}", self.fancy_animations));
         lines.push(format!("  bracketed_paste:    {}", self.bracketed_paste));
@@ -849,6 +863,10 @@ impl Settings {
                 "Auto-compact trigger threshold percent when auto_compact is on: 10-100 (default 80)",
             ),
             ("calm_mode", "Calmer UI defaults: on/off"),
+            (
+                "tool_collapse",
+                "Dense tool-run collapse mode: compact, expanded, calm",
+            ),
             (
                 "low_motion",
                 "Streaming pacing: on = typewriter (one char/tick), off = upstream cadence",
@@ -1174,6 +1192,15 @@ fn normalize_transcript_spacing(value: &str) -> &str {
         "compact" | "tight" => "compact",
         "comfortable" | "default" | "normal" => "comfortable",
         "spacious" | "loose" => "spacious",
+        _ => value,
+    }
+}
+
+fn normalize_tool_collapse_mode(value: &str) -> &str {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "compact" | "default" | "on" | "true" => "compact",
+        "expanded" | "expand" | "off" | "none" | "false" => "expanded",
+        "calm" | "calm_mode" | "calm-mode" | "calm_only" | "calm-only" => "calm",
         _ => value,
     }
 }
@@ -1540,6 +1567,28 @@ mod tests {
             .set("session_panel", "off")
             .expect("disable context panel via alias");
         assert!(!settings.context_panel);
+    }
+
+    #[test]
+    fn tool_collapse_mode_is_configurable() {
+        let mut settings = Settings::default();
+        assert_eq!(settings.tool_collapse_mode, "compact");
+
+        settings
+            .set("tool_collapse", "expanded")
+            .expect("expanded mode");
+        assert_eq!(settings.tool_collapse_mode, "expanded");
+
+        settings.set("collapse", "calm-only").expect("calm alias");
+        assert_eq!(settings.tool_collapse_mode, "calm");
+
+        settings.set("collapse", "off").expect("off alias");
+        assert_eq!(settings.tool_collapse_mode, "expanded");
+
+        let err = settings
+            .set("tool_collapse", "mystery")
+            .expect_err("invalid collapse mode");
+        assert!(err.to_string().contains("invalid tool collapse mode"));
     }
 
     #[test]

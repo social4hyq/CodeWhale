@@ -22,6 +22,7 @@ pub use footer::{
 pub use header::{HeaderData, HeaderWidget, header_status_indicator_frame};
 pub use renderable::Renderable;
 
+use std::collections::HashSet;
 use std::time::Duration;
 
 use crate::localization::Locale;
@@ -30,7 +31,7 @@ use crate::tui::app::{App, AppMode, ComposerDensity, VimMode};
 use crate::tui::approval::{
     ApprovalRequest, ApprovalView, ElevationOption, ElevationRequest, RiskLevel, ToolCategory,
 };
-use crate::tui::history::HistoryCell;
+use crate::tui::history::{GenericToolCell, HistoryCell, ToolCell, ToolRun, ToolStatus};
 use crate::tui::scrolling::TranscriptLineMeta;
 use crate::{
     commands,
@@ -129,7 +130,25 @@ impl ChatWidget {
             .map_or(&[], |active| active.entries());
 
         let history_len = app.history.len();
-        let has_collapsed = !app.collapsed_cells.is_empty();
+        let tool_runs = if app.tool_collapse_active() {
+            crate::tui::history::detect_tool_runs(&app.history, app.tool_collapse_threshold)
+        } else {
+            Vec::new()
+        };
+        let collapsed_run_starts: HashSet<usize> = tool_runs
+            .iter()
+            .filter_map(|run| (!app.expanded_tool_runs.contains(&run.start)).then_some(run.start))
+            .collect();
+        let mut collapsed_tool_indices: HashSet<usize> = HashSet::new();
+        for run in &tool_runs {
+            if !collapsed_run_starts.contains(&run.start) {
+                continue;
+            }
+            for offset in 1..run.count {
+                collapsed_tool_indices.insert(run.start + offset);
+            }
+        }
+        let has_collapsed = !app.collapsed_cells.is_empty() || !collapsed_run_starts.is_empty();
 
         // Fast path: no collapsed cells — use original slices directly.
         if !has_collapsed {
@@ -172,6 +191,18 @@ impl ChatWidget {
 
             for (idx, cell) in app.history.iter().enumerate() {
                 if app.collapsed_cells.contains(&idx) {
+                    continue;
+                }
+                if collapsed_tool_indices.contains(&idx) {
+                    continue;
+                }
+                if let Some(run) = tool_runs
+                    .iter()
+                    .find(|run| run.start == idx && collapsed_run_starts.contains(&idx))
+                {
+                    filtered_cells.push(tool_run_summary_cell(run));
+                    filtered_revs.push(tool_run_summary_revision(run, &app.history_revisions));
+                    filtered_to_original.push(idx);
                     continue;
                 }
                 filtered_cells.push(cell.clone());
@@ -277,14 +308,26 @@ impl ChatWidget {
             && let Some(send_at) = app.last_send_at
         {
             if send_at.elapsed() < SEND_FLASH_DURATION {
-                apply_send_flash(&mut lines, top, &app.history, line_meta);
+                apply_send_flash(
+                    &mut lines,
+                    top,
+                    &app.history,
+                    line_meta,
+                    &app.collapsed_cell_map,
+                );
             } else {
                 app.last_send_at = None;
             }
         }
 
         if let Some(target_cell) = detail_target_cell {
-            apply_detail_target_highlight(&mut lines, top, target_cell, line_meta);
+            apply_detail_target_highlight(
+                &mut lines,
+                top,
+                target_cell,
+                line_meta,
+                &app.collapsed_cell_map,
+            );
         }
 
         apply_selection(&mut lines, top, app);
@@ -321,6 +364,27 @@ impl ChatWidget {
             jump_arrow,
         }
     }
+}
+
+fn tool_run_summary_cell(run: &ToolRun) -> HistoryCell {
+    HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+        name: "activity_group".to_string(),
+        status: ToolStatus::Success,
+        input_summary: Some(crate::tui::history::tool_run_summary(run)),
+        output: None,
+        prompts: None,
+        spillover_path: None,
+        output_summary: None,
+        is_diff: false,
+    }))
+}
+
+fn tool_run_summary_revision(run: &ToolRun, revisions: &[u64]) -> u64 {
+    let mut revision = 0xA11C_EA5E_D00D_2692u64 ^ ((run.start as u64) << 32) ^ (run.count as u64);
+    for idx in run.start..run.start.saturating_add(run.count) {
+        revision = revision.rotate_left(7) ^ revisions.get(idx).copied().unwrap_or(u64::MAX);
+    }
+    revision
 }
 
 impl Renderable for ChatWidget {
@@ -1741,12 +1805,17 @@ fn apply_detail_target_highlight(
     top: usize,
     target_cell: usize,
     line_meta: &[TranscriptLineMeta],
+    original_index_map: &[usize],
 ) {
     let highlight_bg = Color::Reset;
     for (idx, line) in lines.iter_mut().enumerate() {
         let line_index = top + idx;
         if let Some(TranscriptLineMeta::CellLine { cell_index, .. }) = line_meta.get(line_index)
-            && *cell_index == target_cell
+            && original_index_map
+                .get(*cell_index)
+                .copied()
+                .unwrap_or(*cell_index)
+                == target_cell
         {
             for span in &mut line.spans {
                 span.style = span.style.bg(highlight_bg);
@@ -1761,6 +1830,7 @@ fn apply_send_flash(
     top: usize,
     history: &[HistoryCell],
     line_meta: &[TranscriptLineMeta],
+    original_index_map: &[usize],
 ) {
     // Find the last User cell index.
     let last_user_cell = history
@@ -1775,7 +1845,11 @@ fn apply_send_flash(
     for (idx, line) in lines.iter_mut().enumerate() {
         let line_index = top + idx;
         if let Some(TranscriptLineMeta::CellLine { cell_index, .. }) = line_meta.get(line_index)
-            && *cell_index == target_cell
+            && original_index_map
+                .get(*cell_index)
+                .copied()
+                .unwrap_or(*cell_index)
+                == target_cell
         {
             for span in &mut line.spans {
                 span.style = span.style.bg(flash_bg);
@@ -2611,22 +2685,22 @@ fn line_spans_with_selection<'a>(
 mod tests {
     use super::{
         ApprovalWidget, COMPOSER_PANEL_HEIGHT, ChatWidget, ComposerWidget, Renderable,
-        SlashMenuEntry, apply_selection_to_line, build_empty_state_lines, composer_height,
-        composer_max_height, composer_min_input_rows, composer_top_padding, compute_takeover_area,
-        cursor_row_col, layout_input, pad_lines_to_bottom, placeholder_visual_lines,
-        push_command_entry, should_render_empty_state, slash_completion_hints, wrap_input_lines,
-        wrap_text,
+        SlashMenuEntry, apply_detail_target_highlight, apply_selection_to_line, apply_send_flash,
+        build_empty_state_lines, composer_height, composer_max_height, composer_min_input_rows,
+        composer_top_padding, compute_takeover_area, cursor_row_col, layout_input,
+        pad_lines_to_bottom, placeholder_visual_lines, push_command_entry,
+        should_render_empty_state, slash_completion_hints, wrap_input_lines, wrap_text,
     };
     use crate::config::{ApiProvider, Config};
     use crate::localization::Locale;
     use crate::palette;
-    use crate::tui::app::{App, ComposerDensity, TuiOptions};
+    use crate::tui::app::{App, ComposerDensity, ToolCollapseMode, TuiOptions};
     use crate::tui::history::{GenericToolCell, HistoryCell, ToolCell, ToolStatus};
-    use crate::tui::scrolling::TranscriptScroll;
+    use crate::tui::scrolling::{TranscriptLineMeta, TranscriptScroll};
     use ratatui::{
         buffer::Buffer,
         layout::Rect,
-        style::Style,
+        style::{Color, Style},
         text::{Line, Span},
     };
     use std::path::PathBuf;
@@ -2666,6 +2740,131 @@ mod tests {
             text.push('\n');
         }
         text
+    }
+
+    fn success_tool_cell(name: &str) -> HistoryCell {
+        HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+            name: name.to_string(),
+            status: ToolStatus::Success,
+            input_summary: Some(format!("path: {name}.txt")),
+            output: Some(format!("full output from {name}")),
+            prompts: None,
+            spillover_path: None,
+            output_summary: None,
+            is_diff: false,
+        }))
+    }
+
+    fn add_dense_tool_run(app: &mut App) {
+        app.add_message(success_tool_cell("read_file"));
+        app.add_message(success_tool_cell("list_dir"));
+        app.add_message(success_tool_cell("web_search"));
+    }
+
+    #[test]
+    fn send_flash_uses_original_index_map_for_collapsed_rows() {
+        let history = vec![
+            success_tool_cell("read_file"),
+            success_tool_cell("list_dir"),
+            HistoryCell::User {
+                content: "sent".to_string(),
+            },
+        ];
+        let mut lines = vec![Line::from("sent")];
+        let line_meta = vec![TranscriptLineMeta::CellLine {
+            cell_index: 0,
+            line_in_cell: 0,
+            copy_prefix_width: 0,
+            copy_separator_after: crate::tui::ui_text::CopyLineSeparator::Newline,
+        }];
+        let original_index_map = vec![2];
+
+        apply_send_flash(&mut lines, 0, &history, &line_meta, &original_index_map);
+
+        assert_eq!(lines[0].spans[0].style.bg, Some(Color::Rgb(30, 40, 55)));
+    }
+
+    #[test]
+    fn detail_highlight_uses_original_index_map_for_collapsed_rows() {
+        let mut lines = vec![Line::from("tool group")];
+        let line_meta = vec![TranscriptLineMeta::CellLine {
+            cell_index: 0,
+            line_in_cell: 0,
+            copy_prefix_width: 0,
+            copy_separator_after: crate::tui::ui_text::CopyLineSeparator::Newline,
+        }];
+        let original_index_map = vec![4];
+
+        apply_detail_target_highlight(&mut lines, 0, 4, &line_meta, &original_index_map);
+
+        assert_eq!(lines[0].spans[0].style.bg, Some(Color::Reset));
+    }
+
+    #[test]
+    fn chat_widget_collapses_dense_tool_runs_by_default() {
+        let mut app = create_test_app();
+        app.tool_collapse_mode = ToolCollapseMode::Compact;
+        app.tool_collapse_threshold = 3;
+        add_dense_tool_run(&mut app);
+
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 8,
+        };
+        let mut buf = Buffer::empty(area);
+        let widget = ChatWidget::new(&mut app, area);
+        widget.render(area, &mut buf);
+        let rendered = buffer_text(&buf, area);
+
+        assert_eq!(app.collapsed_cell_map, vec![0]);
+        assert!(rendered.contains("3 tools"), "{rendered}");
+        assert!(
+            !rendered.contains("full output from list_dir"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn chat_widget_expands_dense_tool_runs_on_demand() {
+        let mut app = create_test_app();
+        app.tool_collapse_mode = ToolCollapseMode::Compact;
+        app.tool_collapse_threshold = 3;
+        add_dense_tool_run(&mut app);
+        app.expanded_tool_runs.insert(0);
+
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 12,
+        };
+        let mut buf = Buffer::empty(area);
+        let widget = ChatWidget::new(&mut app, area);
+        widget.render(area, &mut buf);
+        let rendered = buffer_text(&buf, area);
+
+        assert_eq!(app.collapsed_cell_map, vec![0, 1, 2]);
+        assert!(rendered.contains("full output from list_dir"), "{rendered}");
+    }
+
+    #[test]
+    fn chat_widget_expanded_mode_leaves_dense_tool_runs_visible() {
+        let mut app = create_test_app();
+        app.tool_collapse_mode = ToolCollapseMode::Expanded;
+        app.tool_collapse_threshold = 3;
+        add_dense_tool_run(&mut app);
+
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 12,
+        };
+        let _widget = ChatWidget::new(&mut app, area);
+
+        assert_eq!(app.collapsed_cell_map, vec![0, 1, 2]);
     }
 
     #[test]

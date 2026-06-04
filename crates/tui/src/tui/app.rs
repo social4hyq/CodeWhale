@@ -327,6 +327,46 @@ impl SidebarFocus {
     }
 }
 
+/// Controls how dense tool-call runs are collapsed in the transcript.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolCollapseMode {
+    /// Collapse qualifying tool runs by default.
+    Compact,
+    /// Never collapse tool runs automatically.
+    Expanded,
+    /// Collapse only when calm mode is active.
+    Calm,
+}
+
+impl ToolCollapseMode {
+    #[must_use]
+    pub fn from_setting(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "expanded" | "off" | "none" => Self::Expanded,
+            "calm" | "calm-mode" | "calm_only" | "calm-only" => Self::Calm,
+            _ => Self::Compact,
+        }
+    }
+
+    #[must_use]
+    pub fn as_setting(self) -> &'static str {
+        match self {
+            Self::Compact => "compact",
+            Self::Expanded => "expanded",
+            Self::Calm => "calm",
+        }
+    }
+
+    #[must_use]
+    pub fn is_active(self, calm_mode: bool) -> bool {
+        match self {
+            Self::Compact => true,
+            Self::Expanded => false,
+            Self::Calm => calm_mode,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatusToastLevel {
     Info,
@@ -1320,6 +1360,12 @@ pub struct App {
     pub sidebar_width_dirty: bool,
     /// Whether the session-context panel is enabled (#504).
     pub context_panel: bool,
+    /// Minimum number of consecutive safe tool cells needed for auto-collapse.
+    pub tool_collapse_threshold: usize,
+    /// Tool runs the user explicitly expanded. Stores original history indices.
+    pub expanded_tool_runs: HashSet<usize>,
+    /// Current dense tool-run collapse behavior.
+    pub tool_collapse_mode: ToolCollapseMode,
     /// File-tree pane state. `None` when hidden; `Some` when visible.
     pub file_tree: Option<crate::tui::file_tree::FileTreeState>,
     /// Whether the file-tree pane was actually rendered in the last frame.
@@ -2048,6 +2094,9 @@ impl App {
             sidebar_resize_total_width: 0,
             sidebar_width_dirty: false,
             context_panel: settings.context_panel,
+            tool_collapse_threshold: 3,
+            expanded_tool_runs: HashSet::new(),
+            tool_collapse_mode: ToolCollapseMode::from_setting(&settings.tool_collapse_mode),
             file_tree: None,
             file_tree_visible: false,
             compact_threshold,
@@ -2607,6 +2656,10 @@ impl App {
             .into_iter()
             .filter_map(|idx| if idx >= n { Some(idx - n) } else { None })
             .collect();
+        self.expanded_tool_runs = std::mem::take(&mut self.expanded_tool_runs)
+            .into_iter()
+            .filter_map(|idx| if idx >= n { Some(idx - n) } else { None })
+            .collect();
         self.collapsed_cell_map.clear();
     }
 
@@ -2701,6 +2754,7 @@ impl App {
         self.session_context_references.clear();
         self.session_artifacts.clear();
         self.collapsed_cells.clear();
+        self.expanded_tool_runs.clear();
         self.collapsed_cell_map.clear();
         self.history_version = self.history_version.wrapping_add(1);
         self.needs_redraw = true;
@@ -2713,6 +2767,8 @@ impl App {
             self.history_revisions.pop();
             self.context_references_by_cell.remove(&self.history.len());
             self.rebuild_session_context_references();
+            self.expanded_tool_runs
+                .retain(|idx| *idx < self.history.len());
             self.history_version = self.history_version.wrapping_add(1);
             self.needs_redraw = true;
         }
@@ -2750,9 +2806,40 @@ impl App {
         }
         // Drop collapsed cells that reference indices past the new tail.
         self.collapsed_cells.retain(|idx| *idx < new_len);
+        self.expanded_tool_runs.retain(|idx| *idx < new_len);
         self.collapsed_cell_map.clear();
         self.history_version = self.history_version.wrapping_add(1);
         self.needs_redraw = true;
+    }
+
+    #[must_use]
+    pub fn tool_collapse_active(&self) -> bool {
+        self.tool_collapse_threshold > 0 && self.tool_collapse_mode.is_active(self.calm_mode)
+    }
+
+    #[must_use]
+    pub fn tool_run_start_for_history_index(&self, index: usize) -> Option<usize> {
+        if !self.tool_collapse_active() || index >= self.history.len() {
+            return None;
+        }
+        crate::tui::history::detect_tool_runs(&self.history, self.tool_collapse_threshold)
+            .into_iter()
+            .find(|run| index >= run.start && index < run.start.saturating_add(run.count))
+            .map(|run| run.start)
+    }
+
+    pub fn toggle_tool_run_expansion_at(&mut self, index: usize) -> bool {
+        let Some(start) = self.tool_run_start_for_history_index(index) else {
+            return false;
+        };
+        if self.expanded_tool_runs.remove(&start) {
+            self.status_message = Some("Tool group collapsed".to_string());
+        } else {
+            self.expanded_tool_runs.insert(start);
+            self.status_message = Some("Tool group expanded".to_string());
+        }
+        self.mark_history_updated();
+        true
     }
 
     /// Bump the active-cell revision counter and request a redraw.
@@ -2785,6 +2872,14 @@ impl App {
     #[allow(dead_code)] // Reserved for the eventual merged push helper.
     pub fn next_virtual_cell_index(&self) -> usize {
         self.virtual_cell_count()
+    }
+
+    #[must_use]
+    pub fn original_cell_index_for_rendered(&self, rendered_index: usize) -> usize {
+        self.collapsed_cell_map
+            .get(rendered_index)
+            .copied()
+            .unwrap_or(rendered_index)
     }
 
     /// Resolve a virtual cell index to either a committed history cell or an
@@ -2842,7 +2937,7 @@ impl App {
             .ordered_endpoints()
             .and_then(|(start, _)| line_meta.get(start.line_index))
             .and_then(TranscriptLineMeta::cell_line)
-            .map(|(cell_index, _)| cell_index)
+            .map(|(cell_index, _)| self.original_cell_index_for_rendered(cell_index))
             .filter(|&idx| self.cell_has_detail_target(idx));
         if selected_cell.is_some() {
             return selected_cell;
@@ -2854,6 +2949,7 @@ impl App {
             let Some((cell_index, _)) = meta.cell_line() else {
                 continue;
             };
+            let cell_index = self.original_cell_index_for_rendered(cell_index);
             if self.cell_has_detail_target(cell_index) {
                 return Some(cell_index);
             }
@@ -4996,6 +5092,7 @@ mod tests {
     use crate::tools::plan::{PlanItemArg, StepStatus, UpdatePlanArgs};
     use crate::tools::todo::TodoStatus;
     use crate::tui::clipboard::PastedImage;
+    use crate::tui::history::{GenericToolCell, ToolCell, ToolStatus};
 
     fn test_options(yolo: bool) -> TuiOptions {
         TuiOptions {
@@ -6153,6 +6250,56 @@ mod tests {
         let initial_version = app.history_version;
         app.mark_history_updated();
         assert!(app.history_version > initial_version);
+    }
+
+    #[test]
+    fn expanded_tool_runs_rebase_when_history_prefix_shifts() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.expanded_tool_runs = std::collections::HashSet::from([2usize, 6usize]);
+
+        app.shift_history_maps_down(3);
+
+        assert_eq!(app.expanded_tool_runs, std::collections::HashSet::from([3]));
+    }
+
+    #[test]
+    fn expanded_tool_runs_prune_when_history_is_truncated() {
+        let mut app = App::new(test_options(false), &Config::default());
+        for idx in 0..5 {
+            app.add_message(HistoryCell::System {
+                content: format!("cell {idx}"),
+            });
+        }
+        app.expanded_tool_runs = std::collections::HashSet::from([1usize, 4usize]);
+
+        app.truncate_history_to(3);
+
+        assert_eq!(app.expanded_tool_runs, std::collections::HashSet::from([1]));
+    }
+
+    #[test]
+    fn tool_run_expansion_toggle_opens_and_closes_run() {
+        let mut app = App::new(test_options(false), &Config::default());
+        app.tool_collapse_mode = ToolCollapseMode::Compact;
+        app.tool_collapse_threshold = 3;
+        for name in ["read_file", "list_dir", "web_search"] {
+            app.add_message(HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+                name: name.to_string(),
+                status: ToolStatus::Success,
+                input_summary: None,
+                output: Some("ok".to_string()),
+                prompts: None,
+                spillover_path: None,
+                output_summary: None,
+                is_diff: false,
+            })));
+        }
+
+        assert!(app.toggle_tool_run_expansion_at(0));
+        assert!(app.expanded_tool_runs.contains(&0));
+        assert!(app.toggle_tool_run_expansion_at(2));
+        assert!(!app.expanded_tool_runs.contains(&0));
+        assert!(!app.toggle_tool_run_expansion_at(99));
     }
 
     #[test]

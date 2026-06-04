@@ -42,6 +42,20 @@ pub(crate) fn should_drop_loading_mouse_motion(app: &App, mouse: MouseEvent) -> 
     }
 }
 
+fn toggle_tool_run_expand(app: &mut App, mouse: MouseEvent) -> bool {
+    if !app.tool_collapse_active() {
+        return false;
+    }
+    let Some(rendered_idx) = transcript_cell_index_from_mouse(app, mouse) else {
+        return false;
+    };
+    let original_idx = app.original_cell_index_for_rendered(rendered_idx);
+    if app.tool_run_start_for_history_index(original_idx) != Some(original_idx) {
+        return false;
+    }
+    app.toggle_tool_run_expansion_at(original_idx)
+}
+
 /// Handle mouse events on the sidebar resize handle (the 1-col vertical bar
 /// between the chat area and the sidebar). Returns true when the event was
 /// consumed so other handlers skip it.
@@ -367,6 +381,10 @@ pub(crate) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) -> Vec<ViewEv
                 return Vec::new();
             }
 
+            if toggle_tool_run_expand(app, mouse) {
+                return Vec::new();
+            }
+
             if let Some(point) = selection_point_from_mouse(app, mouse) {
                 app.viewport.transcript_selection.anchor = Some(point);
                 app.viewport.transcript_selection.head = Some(point);
@@ -620,14 +638,7 @@ pub(crate) fn build_context_menu_entries(app: &App, mouse: MouseEvent) -> Vec<Co
     }
 
     if let Some(filtered_cell_index) = transcript_cell_index_from_mouse(app, mouse) {
-        // Convert filtered index → original virtual index using the
-        // mapping built in ChatWidget::new. When no cells are collapsed
-        // this is an identity mapping.
-        let cell_index = app
-            .collapsed_cell_map
-            .get(filtered_cell_index)
-            .copied()
-            .unwrap_or(filtered_cell_index);
+        let cell_index = app.original_cell_index_for_rendered(filtered_cell_index);
 
         let target = detail_target_label(app, cell_index)
             .map(|label| truncate_line_to_width(label.as_str(), 28))

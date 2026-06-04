@@ -683,6 +683,68 @@ pub enum ToolCell {
 }
 
 impl ToolCell {
+    /// Status for cells that have a concrete lifecycle state.
+    pub fn status(&self) -> Option<ToolStatus> {
+        match self {
+            ToolCell::Exec(cell) => Some(cell.status),
+            ToolCell::Exploring(cell) => {
+                let has_running = cell
+                    .entries
+                    .iter()
+                    .any(|entry| entry.status == ToolStatus::Running);
+                let has_failed = cell
+                    .entries
+                    .iter()
+                    .any(|entry| entry.status == ToolStatus::Failed);
+                Some(if has_running {
+                    ToolStatus::Running
+                } else if has_failed {
+                    ToolStatus::Failed
+                } else {
+                    ToolStatus::Success
+                })
+            }
+            ToolCell::PlanUpdate(cell) => Some(cell.status),
+            ToolCell::PatchSummary(cell) => Some(cell.status),
+            ToolCell::Review(cell) => Some(cell.status),
+            ToolCell::Mcp(cell) => Some(cell.status),
+            ToolCell::WebSearch(cell) => Some(cell.status),
+            ToolCell::Generic(cell) => Some(cell.status),
+            ToolCell::DiffPreview(_) | ToolCell::ViewImage(_) => Some(ToolStatus::Success),
+        }
+    }
+
+    #[must_use]
+    pub fn is_success(&self) -> bool {
+        self.status() == Some(ToolStatus::Success)
+    }
+
+    #[must_use]
+    pub fn is_running(&self) -> bool {
+        self.status() == Some(ToolStatus::Running)
+    }
+
+    #[must_use]
+    pub fn is_failed(&self) -> bool {
+        self.status() == Some(ToolStatus::Failed)
+    }
+
+    /// Whether this cell should stay visible even inside a dense tool run.
+    #[must_use]
+    pub fn is_collapsible_guard(&self) -> bool {
+        self.is_running()
+            || self.is_failed()
+            || matches!(
+                self,
+                ToolCell::Exec(_)
+                    | ToolCell::PatchSummary(_)
+                    | ToolCell::Review(_)
+                    | ToolCell::DiffPreview(_)
+                    | ToolCell::PlanUpdate(_)
+            )
+            || matches!(self, ToolCell::Generic(cell) if generic_tool_name_is_collapse_guard(&cell.name) || cell.is_diff)
+    }
+
     /// Render the tool cell into lines.
     pub fn lines(&self, width: u16) -> Vec<Line<'static>> {
         self.lines_with_motion(width, false)
@@ -713,6 +775,104 @@ impl ToolCell {
             ToolCell::Generic(cell) => cell.lines_with_mode(width, low_motion, mode),
         }
     }
+}
+
+// ── Tool-run grouping for transcript collapse (#2692) ──────────────
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolRun {
+    /// Original index of the first tool cell in `App::history`.
+    pub start: usize,
+    /// Number of collapsed cells in the run.
+    pub count: usize,
+    /// Dominant tool names, deduplicated and capped for summary rendering.
+    pub tool_families: Vec<String>,
+}
+
+/// Detect contiguous runs of successful, low-risk tool cells.
+///
+/// Failed, running, shell, patch, review, diff, and plan-update cells split
+/// runs so important state never disappears into a summary row.
+pub fn detect_tool_runs(history: &[HistoryCell], min_size: usize) -> Vec<ToolRun> {
+    if min_size == 0 {
+        return Vec::new();
+    }
+
+    let mut runs = Vec::new();
+    let mut index = 0;
+    while index < history.len() {
+        if !is_collapsible_tool_cell(&history[index]) {
+            index += 1;
+            continue;
+        }
+
+        let start = index;
+        let mut names: Vec<String> = Vec::new();
+        while index < history.len() && is_collapsible_tool_cell(&history[index]) {
+            if let HistoryCell::Tool(tool) = &history[index] {
+                let name = tool_display_name(tool);
+                if !names.iter().any(|existing| existing == name) {
+                    names.push(name.to_string());
+                }
+            }
+            index += 1;
+        }
+
+        let count = index - start;
+        if count >= min_size {
+            names.truncate(3);
+            runs.push(ToolRun {
+                start,
+                count,
+                tool_families: names,
+            });
+        }
+    }
+
+    runs
+}
+
+fn is_collapsible_tool_cell(cell: &HistoryCell) -> bool {
+    matches!(cell, HistoryCell::Tool(tool) if tool.is_success() && !tool.is_collapsible_guard())
+}
+
+fn generic_tool_name_is_collapse_guard(name: &str) -> bool {
+    let normalized = name.trim().to_ascii_lowercase();
+    normalized.contains("patch")
+        || normalized.contains("write")
+        || normalized.contains("edit")
+        || normalized.contains("delete")
+        || normalized.contains("remove")
+        || normalized.contains("commit")
+        || normalized.contains("push")
+        || normalized.contains("shell")
+        || normalized.contains("exec")
+        || normalized.contains("review")
+}
+
+fn tool_display_name(tool: &ToolCell) -> &str {
+    match tool {
+        ToolCell::Generic(cell) => cell.name.as_str(),
+        ToolCell::Mcp(cell) => cell.tool.as_str(),
+        ToolCell::WebSearch(_) => "web_search",
+        ToolCell::ViewImage(_) => "view_image",
+        ToolCell::Exploring(_) => "explore",
+        ToolCell::Exec(_) => "shell",
+        ToolCell::PlanUpdate(_) => "update_plan",
+        ToolCell::PatchSummary(_) => "apply_patch",
+        ToolCell::Review(_) => "review",
+        ToolCell::DiffPreview(_) => "diff",
+    }
+}
+
+#[must_use]
+pub fn tool_run_summary(run: &ToolRun) -> String {
+    let tools = if run.tool_families.is_empty() {
+        "tools".to_string()
+    } else {
+        run.tool_families.join(", ")
+    };
+    format!("{} tools ({tools}) · all ok", run.count)
 }
 
 /// Overall status for a tool execution.
@@ -5392,5 +5552,143 @@ mod tests {
         let label_span = &lines[0].spans[0];
         assert_eq!(label_span.content.as_ref(), "Info");
         assert_eq!(label_span.style.fg, Some(palette::TEXT_DIM));
+    }
+
+    fn success_generic_tool(name: &str) -> HistoryCell {
+        HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+            name: name.to_string(),
+            status: ToolStatus::Success,
+            input_summary: Some(format!("args for {name}")),
+            output: Some(format!("output for {name}")),
+            prompts: None,
+            spillover_path: None,
+            output_summary: None,
+            is_diff: false,
+        }))
+    }
+
+    fn failed_generic_tool(name: &str) -> HistoryCell {
+        HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+            name: name.to_string(),
+            status: ToolStatus::Failed,
+            input_summary: None,
+            output: Some("failed".to_string()),
+            prompts: None,
+            spillover_path: None,
+            output_summary: None,
+            is_diff: false,
+        }))
+    }
+
+    fn running_generic_tool(name: &str) -> HistoryCell {
+        HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+            name: name.to_string(),
+            status: ToolStatus::Running,
+            input_summary: None,
+            output: None,
+            prompts: None,
+            spillover_path: None,
+            output_summary: None,
+            is_diff: false,
+        }))
+    }
+
+    fn shell_tool(command: &str) -> HistoryCell {
+        HistoryCell::Tool(ToolCell::Exec(ExecCell {
+            command: command.to_string(),
+            status: ToolStatus::Success,
+            output: Some("ok".to_string()),
+            started_at: None,
+            duration_ms: None,
+            source: ExecSource::Assistant,
+            interaction: None,
+            output_summary: None,
+        }))
+    }
+
+    #[test]
+    fn detect_tool_runs_finds_contiguous_successful_safe_tools() {
+        let history = vec![
+            HistoryCell::User {
+                content: "go".to_string(),
+            },
+            success_generic_tool("read_file"),
+            success_generic_tool("list_dir"),
+            success_generic_tool("web_search"),
+            HistoryCell::Assistant {
+                content: "done".to_string(),
+                streaming: false,
+            },
+        ];
+
+        let runs = super::detect_tool_runs(&history, 3);
+
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].start, 1);
+        assert_eq!(runs[0].count, 3);
+        assert_eq!(
+            runs[0].tool_families,
+            vec!["read_file", "list_dir", "web_search"]
+        );
+    }
+
+    #[test]
+    fn detect_tool_runs_honors_threshold_and_boundaries() {
+        let short = vec![
+            success_generic_tool("read_file"),
+            success_generic_tool("list_dir"),
+        ];
+        assert!(super::detect_tool_runs(&short, 3).is_empty());
+
+        let with_assistant_boundary = vec![
+            success_generic_tool("read_file"),
+            HistoryCell::Assistant {
+                content: "pause".to_string(),
+                streaming: false,
+            },
+            success_generic_tool("list_dir"),
+            success_generic_tool("web_search"),
+        ];
+        assert!(super::detect_tool_runs(&with_assistant_boundary, 3).is_empty());
+    }
+
+    #[test]
+    fn detect_tool_runs_keeps_failed_running_and_shell_cells_visible() {
+        let history = vec![
+            success_generic_tool("read_file"),
+            success_generic_tool("list_dir"),
+            failed_generic_tool("web_search"),
+            success_generic_tool("read_file"),
+            success_generic_tool("list_dir"),
+            running_generic_tool("web_search"),
+            success_generic_tool("read_file"),
+            success_generic_tool("list_dir"),
+            shell_tool("rm -rf target"),
+            success_generic_tool("read_file"),
+            success_generic_tool("list_dir"),
+            success_generic_tool("web_search"),
+        ];
+
+        let runs = super::detect_tool_runs(&history, 3);
+
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].start, 9);
+        assert_eq!(runs[0].count, 3);
+    }
+
+    #[test]
+    fn tool_run_summary_reports_compact_success_group() {
+        let run = super::ToolRun {
+            start: 4,
+            count: 5,
+            tool_families: vec!["read_file".to_string(), "list_dir".to_string()],
+        };
+
+        let summary = super::tool_run_summary(&run);
+
+        assert!(summary.contains("5 tools"));
+        assert!(summary.contains("read_file"));
+        assert!(summary.contains("list_dir"));
+        assert!(summary.contains("all ok"));
     }
 }

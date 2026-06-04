@@ -60,6 +60,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Tool-agent sub-agent routing now inherits the parent session model, or an
   explicit tool-agent override, instead of hard-coding `deepseek-v4-flash`;
   the fast lane still disables thinking through provider-aware request shaping.
+- Dense successful read/search/list tool runs now collapse into a single
+  expandable transcript row by default, while running, failed, shell, patch,
+  review, diff, and other risky tool cells remain visible. The setting
+  `tool_collapse = "compact" | "expanded" | "calm"` controls the behavior.
 
 ### Community
 
@@ -70,7 +74,8 @@ prefix-cache stability work (#2517), **@xyuai** for canonical CodeWhale
 settings-path migration work (#2730), **@gaord** for the runtime thread
 workspace update API (#2640), **@shenjackyuanjie** for the
 HarmonyOS/OpenHarmony port and MatePad Edge validation trail (#2634),
-**@idling11** for the PlanArtifact direction in Plan mode (#2733), and
+**@idling11** for the PlanArtifact direction in Plan mode (#2733) and the
+dense tool-call transcript collapse direction (#2738, #2692), and
 **@h3c-hexin** for the tool-agent model inheritance and configured
 `skills_dir` fixes (#2736, #2737).
 

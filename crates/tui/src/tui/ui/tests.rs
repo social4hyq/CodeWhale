@@ -3112,6 +3112,7 @@ fn make_subagent(
         status,
         result: None,
         steps_taken: 0,
+        checkpoint: None,
         duration_ms: 0,
         from_prior_session: false,
     }

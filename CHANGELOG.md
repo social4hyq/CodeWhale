@@ -75,6 +75,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and Agents rows. Mouse hover opens a bordered, wrapping popover with the full
   underlying row text, long turn/agent ids, and current sub-agent progress
   instead of repeating the already-ellipsized sidebar label (#2694, #2734).
+- Sub-agents now preserve checkpoint metadata around long model calls. A
+  per-step API timeout marks the child as interrupted with a continuable
+  checkpoint instead of ending as a null failed result, and `agent_eval` can
+  explicitly continue a live checkpointed interrupted child while normal
+  completed/failed/cancelled follow-up behavior stays unchanged (#2029).
 - Auto-generated project instructions now reuse the bounded Project Context
   Pack data instead of running an unbounded summary/tree scan when no
   `.codewhale/instructions.md` file exists. The fallback keeps later
@@ -97,7 +102,9 @@ HarmonyOS/OpenHarmony port and MatePad Edge validation trail (#2634),
 dense tool-call transcript collapse/sidebar detail direction (#2738, #2734,
 #2692, #2694), and
 **@h3c-hexin** for the tool-agent model inheritance and configured
-`skills_dir` fixes (#2736, #2737). Thanks also to **@NASLXTO** and
+`skills_dir` fixes (#2736, #2737). Thanks also to **@qiyuanlicn** for the
+checkpoint/resume report that shaped the sub-agent recovery slice (#2029),
+and to **@NASLXTO** and
 **@wuxixing** for the large-workspace startup reports (#697, #1827), and to
 **@linzhiqin2003** and **@merchloubna70-dot** for earlier context-cap and
 startup-diagnosis work that shaped this bounded fallback.

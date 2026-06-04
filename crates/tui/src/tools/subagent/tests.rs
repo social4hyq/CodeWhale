@@ -1,4 +1,6 @@
 use super::*;
+use axum::{Json, Router, routing::post};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tempfile::tempdir;
 
 fn make_assignment() -> SubAgentAssignment {
@@ -18,9 +20,24 @@ fn make_snapshot(status: SubAgentStatus) -> SubAgentResult {
         status,
         result: None,
         steps_taken: 0,
+        checkpoint: None,
         duration_ms: 0,
         from_prior_session: false,
     }
+}
+
+fn text_message(role: &str, text: &str) -> Message {
+    Message {
+        role: role.to_string(),
+        content: vec![ContentBlock::Text {
+            text: text.to_string(),
+            cache_control: None,
+        }],
+    }
+}
+
+fn make_checkpoint(agent_id: &str, steps_taken: u32, messages: Vec<Message>) -> SubAgentCheckpoint {
+    build_subagent_checkpoint(agent_id, "test_checkpoint", &messages, steps_taken, true)
 }
 
 fn message_text(message: &Message) -> &str {
@@ -28,6 +45,74 @@ fn message_text(message: &Message) -> &str {
         Some(ContentBlock::Text { text, .. }) => text.as_str(),
         other => panic!("expected text content block, got {other:?}"),
     }
+}
+
+async fn delayed_chat_client(
+    first_delay: Duration,
+    response_text: &str,
+) -> (
+    DeepSeekClient,
+    Arc<AtomicUsize>,
+    Arc<std::sync::Mutex<Vec<Value>>>,
+) {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let bodies = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let response_text = response_text.to_string();
+    let app = Router::new().route(
+        "/{*path}",
+        post({
+            let calls = Arc::clone(&calls);
+            let bodies = Arc::clone(&bodies);
+            move |Json(body): Json<Value>| {
+                let calls = Arc::clone(&calls);
+                let bodies = Arc::clone(&bodies);
+                let response_text = response_text.clone();
+                async move {
+                    let attempt = calls.fetch_add(1, Ordering::SeqCst) + 1;
+                    bodies
+                        .lock()
+                        .expect("request body recorder mutex poisoned")
+                        .push(body);
+                    if attempt == 1 {
+                        tokio::time::sleep(first_delay).await;
+                    }
+                    Json(json!({
+                        "id": format!("chatcmpl-test-{attempt}"),
+                        "model": "deepseek-v4-flash",
+                        "choices": [{
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "content": response_text
+                            },
+                            "finish_reason": "stop"
+                        }],
+                        "usage": {
+                            "prompt_tokens": 1,
+                            "completion_tokens": 1,
+                            "total_tokens": 2
+                        }
+                    }))
+                }
+            }
+        }),
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind fake chat server");
+    let addr = listener.local_addr().expect("fake chat server addr");
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let config = crate::config::Config {
+        api_key: Some("test-key".to_string()),
+        base_url: Some(format!("http://{addr}/v1")),
+        ..crate::config::Config::default()
+    };
+    let client = DeepSeekClient::new(&config).expect("fake chat client");
+    (client, calls, bodies)
 }
 
 fn estimate_tool_description_tokens_conservative(text: &str) -> usize {
@@ -424,6 +509,51 @@ async fn terminal_session_projection_prefers_full_transcript_handle() {
 
     assert_eq!(projection.transcript_handle, full_handle);
     assert_eq!(projection.transcript_handle.name, "full_transcript");
+}
+
+#[tokio::test]
+async fn interrupted_projection_exposes_checkpoint_metadata_and_messages() {
+    let mut snapshot = make_snapshot(SubAgentStatus::Interrupted(
+        "API call timed out after 10ms".to_string(),
+    ));
+    let checkpoint = make_checkpoint(
+        &snapshot.agent_id,
+        1,
+        vec![text_message("user", "inspect checkpoint recovery")],
+    );
+    snapshot.steps_taken = checkpoint.steps_taken;
+    snapshot.checkpoint = Some(checkpoint.clone());
+
+    let ctx = ToolContext::new(".");
+    let projection = subagent_session_projection(snapshot, false, &ctx).await;
+
+    assert_eq!(projection.status, "interrupted");
+    assert!(projection.terminal);
+    assert!(projection.continuable);
+    assert_eq!(
+        projection
+            .checkpoint
+            .as_ref()
+            .expect("checkpoint projected")
+            .continuation_handle,
+        checkpoint.continuation_handle
+    );
+    assert_eq!(
+        projection
+            .snapshot
+            .checkpoint
+            .as_ref()
+            .map(|cp| cp.message_count),
+        Some(1)
+    );
+    assert_eq!(
+        projection
+            .checkpoint
+            .as_ref()
+            .and_then(|cp| cp.messages.first())
+            .map(message_text),
+        Some("inspect checkpoint recovery")
+    );
 }
 
 #[test]
@@ -1090,6 +1220,143 @@ async fn agent_eval_resolves_session_via_agent_name_alias() {
 }
 
 #[tokio::test]
+async fn api_timeout_preserves_checkpoint_and_agent_eval_continues_from_it() {
+    let tmp = tempdir().expect("tempdir");
+    let manager = Arc::new(RwLock::new(SubAgentManager::new(
+        tmp.path().to_path_buf(),
+        2,
+    )));
+    let agent_id = "agent_checkpoint_timeout".to_string();
+    let (task_input_tx, task_input_rx) = mpsc::unbounded_channel();
+    let agent = SubAgent::new(
+        agent_id.clone(),
+        SubAgentType::General,
+        "Inspect checkpoint behavior".to_string(),
+        make_assignment(),
+        "deepseek-v4-flash".to_string(),
+        Some("Blue".to_string()),
+        Some(vec![]),
+        task_input_tx,
+        "boot_test".to_string(),
+    );
+    manager.write().await.agents.insert(agent_id.clone(), agent);
+
+    let (client, calls, bodies) =
+        delayed_chat_client(Duration::from_millis(80), "resumed answer").await;
+    let mut runtime = stub_runtime().with_step_api_timeout(Duration::from_millis(10));
+    runtime.client = client;
+    runtime.manager = Arc::clone(&manager);
+    runtime.context = ToolContext::new(tmp.path());
+
+    let task = SubAgentTask {
+        manager_handle: Arc::clone(&manager),
+        runtime: runtime.clone(),
+        agent_id: agent_id.clone(),
+        agent_type: SubAgentType::General,
+        prompt: "Inspect checkpoint behavior".to_string(),
+        assignment: make_assignment(),
+        allowed_tools: Some(vec![]),
+        fork_context: false,
+        started_at: Instant::now(),
+        max_steps: 3,
+        input_rx: task_input_rx,
+    };
+    let task_handle = tokio::spawn(run_subagent_task(task));
+
+    let interrupted = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let snapshot = {
+                let manager = manager.read().await;
+                manager
+                    .get_result(&agent_id)
+                    .expect("agent should stay registered")
+            };
+            if matches!(snapshot.status, SubAgentStatus::Interrupted(_)) {
+                return snapshot;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("agent should become interrupted after API timeout");
+
+    let checkpoint = interrupted
+        .checkpoint
+        .as_ref()
+        .expect("timeout should preserve checkpoint");
+    assert!(checkpoint.continuable);
+    assert_eq!(checkpoint.steps_taken, 1);
+    assert!(
+        checkpoint
+            .messages
+            .iter()
+            .any(|message| message_text(message).contains("Inspect checkpoint behavior")),
+        "checkpoint should preserve local child prompt: {checkpoint:?}"
+    );
+
+    let ctx = runtime.context.clone();
+    let tool = AgentEvalTool::new(Arc::clone(&manager));
+    let result = tool
+        .execute(json!({ "agent_id": agent_id, "block": false }), &ctx)
+        .await
+        .expect("agent_eval should project interrupted checkpoint");
+    let projection: SubAgentSessionProjection =
+        serde_json::from_str(&result.content).expect("projection deserializes");
+    assert_eq!(projection.status, "interrupted");
+    assert!(projection.continuable);
+    assert!(projection.checkpoint.is_some());
+
+    let result = tool
+        .execute(
+            json!({
+                "agent_id": agent_id,
+                "continue": true,
+                "message": "Please continue with the prior checkpoint.",
+                "timeout_ms": 2000
+            }),
+            &ctx,
+        )
+        .await
+        .expect("agent_eval should continue checkpointed interrupted session");
+    let meta = result.metadata.expect("metadata present");
+    assert_eq!(
+        meta["message_delivery"]["continued_from_checkpoint"],
+        json!(true)
+    );
+    let projection: SubAgentSessionProjection =
+        serde_json::from_str(&result.content).expect("projection deserializes");
+    assert_eq!(projection.status, "completed");
+    assert_eq!(
+        projection.snapshot.result.as_deref(),
+        Some("resumed answer")
+    );
+    assert!(
+        projection
+            .checkpoint
+            .as_ref()
+            .expect("completed projection keeps latest checkpoint")
+            .messages
+            .iter()
+            .any(|message| message_text(message)
+                .contains("Please continue with the prior checkpoint.")),
+        "continuation instruction should be part of resumed transcript"
+    );
+
+    task_handle.await.expect("sub-agent task should finish");
+    assert!(
+        calls.load(Ordering::SeqCst) >= 2,
+        "continuation should make a second API request"
+    );
+    let bodies = bodies
+        .lock()
+        .expect("request body recorder mutex poisoned")
+        .clone();
+    let second_request = serde_json::to_string(&bodies[1]).expect("second request body serializes");
+    assert!(second_request.contains("Inspect checkpoint behavior"));
+    assert!(second_request.contains("Please continue with the prior checkpoint."));
+}
+
+#[tokio::test]
 async fn spawn_duplicate_session_name_error_names_conflicting_agent() {
     // #2656: the duplicate-name error must identify the conflicting agent so a
     // model can recover deterministically (reuse the id, or pick a new name).
@@ -1466,6 +1733,52 @@ fn test_persist_and_reload_marks_running_agent_as_interrupted() {
         SubAgentStatus::Interrupted(ref message)
             if message.contains(SUBAGENT_RESTART_REASON)
     ));
+}
+
+#[test]
+fn persist_and_reload_preserves_checkpoint_for_interrupted_running_agent() {
+    let tmp = tempdir().expect("tempdir");
+    let workspace = tmp.path().to_path_buf();
+    let state_path = default_state_path(tmp.path());
+
+    let mut manager = SubAgentManager::new(workspace.clone(), 2).with_state_path(state_path);
+    let (input_tx, _input_rx) = mpsc::unbounded_channel();
+    let mut running = SubAgent::new(
+        "test_agent_checkpoint_reload".to_string(),
+        SubAgentType::General,
+        "work".to_string(),
+        make_assignment(),
+        "deepseek-v4-flash".to_string(),
+        Some("Blue".to_string()),
+        Some(vec!["read_file".to_string()]),
+        input_tx,
+        "boot_test".to_string(),
+    );
+    running.checkpoint = Some(make_checkpoint(
+        &running.id,
+        2,
+        vec![
+            text_message("user", "initial task"),
+            text_message("assistant", "partial progress"),
+        ],
+    ));
+    let running_id = running.id.clone();
+    manager.agents.insert(running_id.clone(), running);
+    manager.persist_state().expect("persist state");
+
+    let mut reloaded =
+        SubAgentManager::new(workspace, 2).with_state_path(default_state_path(tmp.path()));
+    reloaded.load_state().expect("load state");
+    let snapshot = reloaded
+        .get_result(&running_id)
+        .expect("reloaded agent should exist");
+
+    assert!(matches!(snapshot.status, SubAgentStatus::Interrupted(_)));
+    let checkpoint = snapshot.checkpoint.expect("checkpoint should reload");
+    assert!(checkpoint.continuable);
+    assert_eq!(checkpoint.steps_taken, 2);
+    assert_eq!(checkpoint.messages.len(), 2);
+    assert_eq!(message_text(&checkpoint.messages[1]), "partial progress");
 }
 
 #[test]

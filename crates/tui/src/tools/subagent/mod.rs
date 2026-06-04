@@ -594,6 +594,8 @@ pub struct SubAgentResult {
     pub status: SubAgentStatus,
     pub result: Option<String>,
     pub steps_taken: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<SubAgentCheckpoint>,
     pub duration_ms: u64,
     /// `true` when this agent was loaded from a prior-session persisted
     /// state file rather than spawned in the current session (#405).
@@ -691,6 +693,21 @@ struct AssignRequest {
     interrupt: bool,
 }
 
+/// Durable recovery point for an interrupted sub-agent session.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SubAgentCheckpoint {
+    pub checkpoint_id: String,
+    pub agent_id: String,
+    pub continuation_handle: String,
+    pub reason: String,
+    pub continuable: bool,
+    pub steps_taken: u32,
+    pub message_count: usize,
+    pub created_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub messages: Vec<Message>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PersistedSubAgent {
     id: String,
@@ -708,6 +725,8 @@ struct PersistedSubAgent {
     status: SubAgentStatus,
     result: Option<String>,
     steps_taken: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    checkpoint: Option<SubAgentCheckpoint>,
     duration_ms: u64,
     allowed_tools: Vec<String>,
     updated_at_ms: u64,
@@ -1034,6 +1053,7 @@ pub struct SubAgent {
     pub status: SubAgentStatus,
     pub result: Option<String>,
     pub steps_taken: u32,
+    pub checkpoint: Option<SubAgentCheckpoint>,
     pub started_at: Instant,
     pub last_activity_at: Instant,
     /// `None` = full registry inheritance, with approval-gated tools still
@@ -1078,6 +1098,7 @@ impl SubAgent {
             status: SubAgentStatus::Running,
             result: None,
             steps_taken: 0,
+            checkpoint: None,
             started_at,
             last_activity_at: started_at,
             allowed_tools,
@@ -1102,6 +1123,7 @@ impl SubAgent {
             status: self.status.clone(),
             result: self.result.clone(),
             steps_taken: self.steps_taken,
+            checkpoint: self.checkpoint.clone(),
             duration_ms: u64::try_from(self.started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
             // Snapshots from the agent itself don't know the manager's
             // current boot id, so default to false. The manager fills
@@ -1199,6 +1221,7 @@ impl SubAgentManager {
                 status: agent.status.clone(),
                 result: agent.result.clone(),
                 steps_taken: agent.steps_taken,
+                checkpoint: agent.checkpoint.clone(),
                 duration_ms: u64::try_from(agent.started_at.elapsed().as_millis())
                     .unwrap_or(u64::MAX),
                 // Backward-compat: Vec on disk. None → empty vec; Some(list) → list.
@@ -1278,6 +1301,7 @@ impl SubAgentManager {
                 status,
                 result: persisted.result,
                 steps_taken: persisted.steps_taken,
+                checkpoint: persisted.checkpoint,
                 started_at,
                 last_activity_at: started_at,
                 allowed_tools,
@@ -1848,6 +1872,7 @@ impl SubAgentManager {
             agent.assignment = result.assignment;
             agent.result = result.result;
             agent.steps_taken = result.steps_taken;
+            agent.checkpoint = result.checkpoint;
             agent.task_handle = None;
             changed = true;
         }
@@ -1868,6 +1893,83 @@ impl SubAgentManager {
             self.persist_state_best_effort();
         }
     }
+
+    fn update_checkpoint(&mut self, agent_id: &str, checkpoint: SubAgentCheckpoint) -> bool {
+        let Some(agent) = self.agents.get_mut(agent_id) else {
+            return false;
+        };
+        agent.steps_taken = checkpoint.steps_taken;
+        agent.checkpoint = Some(checkpoint);
+        agent.last_activity_at = Instant::now();
+        self.persist_state_best_effort();
+        true
+    }
+
+    fn interrupt_with_checkpoint(
+        &mut self,
+        agent_id: &str,
+        reason: String,
+        checkpoint: SubAgentCheckpoint,
+    ) -> Result<SubAgentResult> {
+        let snapshot = {
+            let agent = self
+                .agents
+                .get_mut(agent_id)
+                .ok_or_else(|| anyhow!("Agent {agent_id} not found"))?;
+            agent.status = SubAgentStatus::Interrupted(reason.clone());
+            agent.result = Some(reason);
+            agent.steps_taken = checkpoint.steps_taken;
+            agent.checkpoint = Some(checkpoint);
+            agent.last_activity_at = Instant::now();
+            release_resident_leases_for(agent_id);
+            agent.snapshot()
+        };
+        self.persist_state_best_effort();
+        Ok(snapshot)
+    }
+
+    fn continue_checkpointed(
+        &mut self,
+        agent_id: &str,
+        message: Option<String>,
+        interrupt: bool,
+    ) -> Result<SubAgentResult> {
+        let snapshot = {
+            let agent = self
+                .agents
+                .get_mut(agent_id)
+                .ok_or_else(|| anyhow!("Agent {agent_id} not found"))?;
+            if !matches!(agent.status, SubAgentStatus::Interrupted(_)) {
+                return Err(anyhow!(
+                    "Agent {agent_id} is not interrupted; checkpoint continuation is only available for interrupted sessions"
+                ));
+            }
+            let checkpoint = agent
+                .checkpoint
+                .as_ref()
+                .ok_or_else(|| anyhow!("Agent {agent_id} has no checkpoint to continue"))?;
+            if !checkpoint.continuable || checkpoint.messages.is_empty() {
+                return Err(anyhow!("Agent {agent_id} checkpoint is not continuable"));
+            }
+            let tx = agent.input_tx.as_ref().ok_or_else(|| {
+                anyhow!(
+                    "Agent {agent_id} checkpoint is persisted, but no live child task is available to continue"
+                )
+            })?;
+            tx.send(SubAgentInput {
+                text: message.unwrap_or_default(),
+                interrupt,
+            })
+            .map_err(|_| anyhow!("Failed to continue checkpointed agent {agent_id}"))?;
+
+            agent.status = SubAgentStatus::Running;
+            agent.result = None;
+            agent.last_activity_at = Instant::now();
+            agent.snapshot()
+        };
+        self.persist_state_best_effort();
+        Ok(snapshot)
+    }
 }
 
 /// Thread-safe wrapper for `SubAgentManager`.
@@ -1885,6 +1987,10 @@ pub struct SubAgentSessionProjection {
     pub prefix_cache: SubAgentPrefixCacheProjection,
     pub transcript_handle: VarHandle,
     pub snapshot: SubAgentResult,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<SubAgentCheckpoint>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub continuable: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub timed_out: bool,
 }
@@ -1912,6 +2018,14 @@ fn subagent_prefix_cache_projection(snapshot: &SubAgentResult) -> SubAgentPrefix
     }
 }
 
+fn subagent_checkpoint_is_continuable(snapshot: &SubAgentResult) -> bool {
+    matches!(snapshot.status, SubAgentStatus::Interrupted(_))
+        && snapshot
+            .checkpoint
+            .as_ref()
+            .is_some_and(|checkpoint| checkpoint.continuable && !checkpoint.messages.is_empty())
+}
+
 async fn subagent_session_projection(
     snapshot: SubAgentResult,
     timed_out: bool,
@@ -1929,6 +2043,7 @@ async fn subagent_session_projection(
         "steps_taken": snapshot.steps_taken,
         "duration_ms": snapshot.duration_ms,
         "assignment": snapshot.assignment.clone(),
+        "checkpoint": snapshot.checkpoint.clone(),
         "snapshot": snapshot.clone(),
     });
     let transcript_handle = {
@@ -1960,6 +2075,8 @@ async fn subagent_session_projection(
         fork_context: snapshot.fork_context,
         prefix_cache: subagent_prefix_cache_projection(&snapshot),
         transcript_handle,
+        checkpoint: snapshot.checkpoint.clone(),
+        continuable: subagent_checkpoint_is_continuable(&snapshot),
         snapshot,
         timed_out,
     }
@@ -2609,7 +2726,7 @@ impl ToolSpec for AgentEvalTool {
     }
 
     fn description(&self) -> &'static str {
-        "Fetch or wait on a child sub-agent session. Optionally deliver a message/items to a running session, then return the latest session projection. With block=true (default), waits for the session to reach a terminal boundary; block=false is a non-blocking status fetch. Terminal projections expose a handle_read-compatible transcript_handle for the full child transcript."
+        "Fetch or wait on a child sub-agent session. Optionally deliver a message/items to a running session, then return the latest session projection. With continue=true, resume only a checkpointed interrupted session. With block=true (default), waits for the session to reach a terminal boundary; block=false is a non-blocking status fetch. Terminal projections expose a handle_read-compatible transcript_handle for the full child transcript."
     }
 
     fn input_schema(&self) -> Value {
@@ -2649,6 +2766,14 @@ impl ToolSpec for AgentEvalTool {
                     "type": "boolean",
                     "description": "When sending input, prioritize it over pending inputs"
                 },
+                "continue": {
+                    "type": "boolean",
+                    "description": "Resume a checkpointed interrupted session. Only valid when the projection has continuable=true."
+                },
+                "resume": {
+                    "type": "boolean",
+                    "description": "Alias for continue"
+                },
                 "block": {
                     "type": "boolean",
                     "description": "Wait for a terminal boundary before returning (default true)"
@@ -2677,6 +2802,8 @@ impl ToolSpec for AgentEvalTool {
             .ok_or_else(|| ToolError::missing_field("name"))?;
         let message = parse_optional_text_or_items(&input, &["message", "input"], "items")?;
         let interrupt = optional_bool(&input, "interrupt", false);
+        let continue_from_checkpoint =
+            optional_bool(&input, "continue", false) || optional_bool(&input, "resume", false);
         let block = optional_bool(&input, "block", true);
         let timeout_ms = optional_u64(&input, "timeout_ms", DEFAULT_RESULT_TIMEOUT_MS)
             .clamp(1000, MAX_RESULT_TIMEOUT_MS);
@@ -2696,7 +2823,16 @@ impl ToolSpec for AgentEvalTool {
         // completed session returns 'not running', no way to recover the full
         // child output".
         let mut message_delivery: Option<Value> = None;
-        if let Some(message) = message {
+        if continue_from_checkpoint {
+            let mut manager = self.manager.write().await;
+            manager
+                .continue_checkpointed(&agent_id, message, interrupt)
+                .map_err(|e| ToolError::execution_failed(e.to_string()))?;
+            message_delivery = Some(json!({
+                "delivered": true,
+                "continued_from_checkpoint": true
+            }));
+        } else if let Some(message) = message {
             let terminal = {
                 let manager = self.manager.read().await;
                 manager
@@ -3846,6 +3982,7 @@ async fn insert_subagent_full_transcript_handle(
     assignment: &SubAgentAssignment,
     status: &SubAgentStatus,
     result: Option<&String>,
+    checkpoint: Option<&SubAgentCheckpoint>,
     messages: &[Message],
     steps_taken: u32,
     duration_ms: u64,
@@ -3862,10 +3999,48 @@ async fn insert_subagent_full_transcript_handle(
         "steps_taken": steps_taken,
         "duration_ms": duration_ms,
         "assignment": assignment,
+        "checkpoint": checkpoint,
         "messages": messages,
     });
     let mut store = runtime.context.runtime.handle_store.lock().await;
     store.insert_json(format!("agent:{agent_id}"), "full_transcript", payload)
+}
+
+fn build_subagent_checkpoint(
+    agent_id: &str,
+    reason: impl Into<String>,
+    messages: &[Message],
+    steps_taken: u32,
+    continuable: bool,
+) -> SubAgentCheckpoint {
+    let created_at_ms = epoch_millis_now();
+    let checkpoint_id = format!("{agent_id}:step:{steps_taken}:ts:{created_at_ms}");
+    SubAgentCheckpoint {
+        checkpoint_id: checkpoint_id.clone(),
+        agent_id: agent_id.to_string(),
+        continuation_handle: format!("agent:{agent_id}:checkpoint:{checkpoint_id}"),
+        reason: reason.into(),
+        continuable,
+        steps_taken,
+        message_count: messages.len(),
+        created_at_ms,
+        messages: messages.to_vec(),
+    }
+}
+
+async fn checkpoint_subagent_progress(
+    runtime: &SubAgentRuntime,
+    agent_id: &str,
+    reason: impl Into<String>,
+    messages: &[Message],
+    steps_taken: u32,
+    continuable: bool,
+) -> SubAgentCheckpoint {
+    let checkpoint =
+        build_subagent_checkpoint(agent_id, reason, messages, steps_taken, continuable);
+    let mut manager = runtime.manager.write().await;
+    manager.update_checkpoint(agent_id, checkpoint.clone());
+    checkpoint
 }
 
 fn record_agent_progress(runtime: &SubAgentRuntime, agent_id: &str, message: impl Into<String>) {
@@ -3934,8 +4109,9 @@ async fn run_subagent(
     let mut final_result: Option<String> = None;
     let mut pending_inputs: VecDeque<SubAgentInput> = VecDeque::new();
     let mut consecutive_truncated_responses = 0;
+    let mut latest_checkpoint: Option<SubAgentCheckpoint> = None;
 
-    for _step in 0..max_steps {
+    'steps_loop: for _step in 0..max_steps {
         // Cooperative cancellation: bail if this session's token was cancelled
         // while we were between steps. Top-level model-visible sub-agents use
         // a detached token so parent turn cancellation does not stop them.
@@ -3959,6 +4135,7 @@ async fn run_subagent(
                 &assignment,
                 &status,
                 None,
+                latest_checkpoint.as_ref(),
                 &messages,
                 steps,
                 duration_ms,
@@ -3982,6 +4159,7 @@ async fn run_subagent(
                 status,
                 result: None,
                 steps_taken: steps,
+                checkpoint: latest_checkpoint.clone(),
                 duration_ms,
                 from_prior_session: false,
             });
@@ -4027,6 +4205,17 @@ async fn run_subagent(
             temperature: None,
             top_p: None,
         };
+        latest_checkpoint = Some(
+            checkpoint_subagent_progress(
+                runtime,
+                &agent_id,
+                "before_api_request",
+                &messages,
+                steps,
+                true,
+            )
+            .await,
+        );
 
         // Race the API call against the cancellation token so a parent
         // cancel during a long thinking turn doesn't have to wait for the
@@ -4053,6 +4242,7 @@ async fn run_subagent(
                     &assignment,
                     &status,
                     None,
+                    latest_checkpoint.as_ref(),
                     &messages,
                     steps,
                     duration_ms,
@@ -4071,12 +4261,130 @@ async fn run_subagent(
                     status,
                     result: None,
                     steps_taken: steps,
+                    checkpoint: latest_checkpoint.clone(),
                     duration_ms,
                     from_prior_session: false,
                 });
             }
             api = tokio::time::timeout(runtime.step_api_timeout, runtime.client.create_message(request)) => {
-                api.map_err(|_| anyhow!("API call timed out after {}s", runtime.step_api_timeout.as_secs()))??
+                match api {
+                    Ok(response) => response?,
+                    Err(_) => {
+                        let reason = format!(
+                            "API call timed out after {}ms; checkpoint preserved for continuation",
+                            runtime.step_api_timeout.as_millis()
+                        );
+                        let checkpoint = checkpoint_subagent_progress(
+                            runtime,
+                            &agent_id,
+                            "api_timeout",
+                            &messages,
+                            steps,
+                            true,
+                        )
+                        .await;
+                        latest_checkpoint = Some(checkpoint.clone());
+                        record_agent_progress(
+                            runtime,
+                            &agent_id,
+                            format!("step {steps}/{max_steps}: interrupted; {reason}"),
+                        );
+                        let status = SubAgentStatus::Interrupted(reason.clone());
+                        let duration_ms =
+                            u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+                        insert_subagent_full_transcript_handle(
+                            runtime,
+                            &agent_id,
+                            &agent_type,
+                            &assignment,
+                            &status,
+                            Some(&reason),
+                            Some(&checkpoint),
+                            &messages,
+                            steps,
+                            duration_ms,
+                            fork_context_enabled,
+                        )
+                        .await;
+                        let interrupted_snapshot = {
+                            let mut manager = runtime.manager.write().await;
+                            manager.interrupt_with_checkpoint(
+                                &agent_id,
+                                reason.clone(),
+                                checkpoint.clone(),
+                            )?
+                        };
+
+                        let next_input = tokio::select! {
+                            biased;
+                            () = runtime.cancel_token.cancelled() => {
+                                record_agent_progress(
+                                    runtime,
+                                    &agent_id,
+                                    format!("step {steps}/{max_steps}: cancelled while interrupted"),
+                                );
+                                if let Some(mb) = runtime.mailbox.as_ref() {
+                                    let _ = mb.send(MailboxMessage::Cancelled {
+                                        agent_id: agent_id.clone(),
+                                    });
+                                }
+                                let status = SubAgentStatus::Cancelled;
+                                let duration_ms = u64::try_from(started_at.elapsed().as_millis())
+                                    .unwrap_or(u64::MAX);
+                                insert_subagent_full_transcript_handle(
+                                    runtime,
+                                    &agent_id,
+                                    &agent_type,
+                                    &assignment,
+                                    &status,
+                                    None,
+                                    latest_checkpoint.as_ref(),
+                                    &messages,
+                                    steps,
+                                    duration_ms,
+                                    fork_context_enabled,
+                                )
+                                .await;
+                                return Ok(SubAgentResult {
+                                    name: agent_id.clone(),
+                                    agent_id: agent_id.clone(),
+                                    context_mode: if fork_context_enabled { "forked" } else { "fresh" }.to_string(),
+                                    fork_context: fork_context_enabled,
+                                    agent_type: agent_type.clone(),
+                                    assignment: assignment.clone(),
+                                    model: runtime.model.clone(),
+                                    nickname: None,
+                                    status,
+                                    result: None,
+                                    steps_taken: steps,
+                                    checkpoint: latest_checkpoint.clone(),
+                                    duration_ms,
+                                    from_prior_session: false,
+                                });
+                            }
+                            input = input_rx.recv() => input,
+                        };
+                        let Some(input) = next_input else {
+                            return Ok(interrupted_snapshot);
+                        };
+                        if input.interrupt {
+                            pending_inputs.clear();
+                        }
+                        pending_inputs.push_back(input);
+                        latest_checkpoint = Some(
+                            checkpoint_subagent_progress(
+                                runtime,
+                                &agent_id,
+                                "continued_after_api_timeout",
+                                &messages,
+                                steps,
+                                true,
+                            )
+                            .await,
+                        );
+                        continue 'steps_loop;
+                    }
+                }
             }
         };
 
@@ -4109,6 +4417,17 @@ async fn run_subagent(
             role: "assistant".to_string(),
             content: response.content.clone(),
         });
+        latest_checkpoint = Some(
+            checkpoint_subagent_progress(
+                runtime,
+                &agent_id,
+                "after_model_response",
+                &messages,
+                steps,
+                true,
+            )
+            .await,
+        );
 
         if response_was_truncated(&response) {
             final_result = None;
@@ -4134,6 +4453,17 @@ async fn run_subagent(
                     truncated_response_tool_results(&tool_uses)
                 },
             });
+            latest_checkpoint = Some(
+                checkpoint_subagent_progress(
+                    runtime,
+                    &agent_id,
+                    "after_truncated_response_retry_message",
+                    &messages,
+                    steps,
+                    true,
+                )
+                .await,
+            );
             continue;
         }
         reset_truncated_subagent_responses(&mut consecutive_truncated_responses);
@@ -4217,12 +4547,30 @@ async fn run_subagent(
                 role: "user".to_string(),
                 content: tool_results,
             });
+            latest_checkpoint = Some(
+                checkpoint_subagent_progress(
+                    runtime,
+                    &agent_id,
+                    "after_tool_results",
+                    &messages,
+                    steps,
+                    true,
+                )
+                .await,
+            );
         }
     }
 
     release_resident_leases_for(&agent_id);
     let status = SubAgentStatus::Completed;
     let duration_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+    latest_checkpoint = Some(build_subagent_checkpoint(
+        &agent_id,
+        "completed",
+        &messages,
+        steps,
+        false,
+    ));
     insert_subagent_full_transcript_handle(
         runtime,
         &agent_id,
@@ -4230,6 +4578,7 @@ async fn run_subagent(
         &assignment,
         &status,
         final_result.as_ref(),
+        latest_checkpoint.as_ref(),
         &messages,
         steps,
         duration_ms,
@@ -4254,6 +4603,7 @@ async fn run_subagent(
         status,
         result: final_result,
         steps_taken: steps,
+        checkpoint: latest_checkpoint,
         duration_ms,
         from_prior_session: false,
     })

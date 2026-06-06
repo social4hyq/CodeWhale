@@ -18,6 +18,8 @@ export interface ThreadSummary {
   mode: string;
   workspace?: string;
   branch?: string;
+  head?: string;
+  dirty: boolean;
   archived: boolean;
   updatedAt: string;
   latestTurnStatus?: string;
@@ -228,6 +230,8 @@ function readThreadSummaries(value: unknown): ThreadSummary[] {
         mode: readString(record.mode) ?? "agent",
         workspace: readString(record.workspace),
         branch: readString(record.branch),
+        head: readString(record.head),
+        dirty: readBoolean(record.dirty),
         archived: record.archived === true,
         updatedAt: readString(record.updated_at) ?? "",
         latestTurnStatus: readString(record.latest_turn_status),
@@ -263,6 +267,10 @@ function readString(value: unknown): string | undefined {
 
 function readNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function readBoolean(value: unknown): boolean {
+  return value === true;
 }
 
 function clampRefreshInterval(value: number): number {

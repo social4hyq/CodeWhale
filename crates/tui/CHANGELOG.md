@@ -225,6 +225,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cross-tab events, and corruption-tolerant persisted state, while leaving the
   broader collaboration UI wiring to follow-up work (#2864). Thanks
   @ljm3790865 for the tab-core implementation and #2753 direction.
+- The VS Code Agent View now renders the runtime thread summary's Git `head`
+  and dirty-worktree flag alongside branch metadata, keeping branch switches
+  visible without adding retry/undo/restore mutation endpoints yet (#2580,
+  #2862). Thanks @AiurArtanis and @nasus9527 for the IDE/agent-view requests
+  and @gaord for the runtime metadata direction.
 
 ### Changed
 

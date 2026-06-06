@@ -200,6 +200,8 @@ function readThreadSummaries(value) {
                 mode: readString(record.mode) ?? "agent",
                 workspace: readString(record.workspace),
                 branch: readString(record.branch),
+                head: readString(record.head),
+                dirty: readBoolean(record.dirty),
                 archived: record.archived === true,
                 updatedAt: readString(record.updated_at) ?? "",
                 latestTurnStatus: readString(record.latest_turn_status),
@@ -230,6 +232,9 @@ function readString(value) {
 }
 function readNumber(value) {
     return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+function readBoolean(value) {
+    return value === true;
 }
 function clampRefreshInterval(value) {
     if (!Number.isFinite(value)) {

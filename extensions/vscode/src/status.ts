@@ -120,14 +120,32 @@ function renderSnapshot(snapshot: SnapshotEntry): string {
 function renderThread(thread: ThreadSummary): string {
   const status = thread.latestTurnStatus ? ` · ${thread.latestTurnStatus}` : "";
   const archived = thread.archived ? " · archived" : "";
-  const branch = thread.branch ? ` · branch ${thread.branch}` : "";
+  const git = renderGitMetadata(thread);
   const workspace = thread.workspace ? ` · ${thread.workspace}` : "";
   const updated = thread.updatedAt ? ` · ${formatTimestamp(thread.updatedAt)}` : "";
   return `<div class="thread">
     <div class="thread-title">${escapeHtml(thread.title)}</div>
     <div class="thread-preview">${escapeHtml(thread.preview || "No recent message.")}</div>
-    <div class="thread-meta">${escapeHtml(`${thread.mode} · ${thread.model}${status}${branch}${archived}${updated}${workspace}`)}</div>
+    <div class="thread-meta">${escapeHtml(`${thread.mode} · ${thread.model}${status}${git}${archived}${updated}${workspace}`)}</div>
   </div>`;
+}
+
+function renderGitMetadata(thread: ThreadSummary): string {
+  if (!thread.branch && !thread.head && !thread.dirty) {
+    return "";
+  }
+
+  const parts: string[] = [];
+  if (thread.branch) {
+    parts.push(`branch ${thread.branch}`);
+  }
+  if (thread.head) {
+    parts.push(`@ ${thread.head}`);
+  }
+  if (thread.dirty) {
+    parts.push("dirty");
+  }
+  return ` · ${parts.join(" ")}`;
 }
 
 function labelFor(kind: RuntimeState["kind"]): string {

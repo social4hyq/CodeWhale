@@ -15,8 +15,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    container:
-      image: swr.cn-north-4.myhuaweicloud.com/harmonybrew/ci-runner:latest
 
     steps:
       - name: Checkout fork
@@ -33,26 +31,40 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Building version: $VERSION"
 
-      - name: Patch sources for OpenHarmony
+      - name: Pull ci-runner image
         run: |
-          chmod +x scripts/patch-ohos.sh
-          bash scripts/patch-ohos.sh
+          docker pull swr.cn-north-4.myhuaweicloud.com/harmonybrew/ci-runner:latest
 
-      - name: Build release binaries
-        env:
-          AWS_LC_SYS_NO_ASM: "1"
-          CARGO_BUILD_JOBS: "4"
+      - name: Build in ci-runner container
         run: |
-          cargo build --release
+          # 将源码和工作目录挂载到容器中进行构建
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            -e AWS_LC_SYS_NO_ASM=1 \
+            -e CARGO_BUILD_JOBS=4 \
+            -e HOME=/root \
+            --entrypoint sh \
+            swr.cn-north-4.myhuaweicloud.com/harmonybrew/ci-runner:latest \
+            -c '
+              set -e
+              echo "=== Patching sources ==="
+              chmod +x scripts/patch-ohos.sh
+              bash scripts/patch-ohos.sh
 
-      - name: Sign binaries
-        run: |
-          binary-sign-tool sign -selfSign 1 \
-            -inFile target/release/codewhale \
-            -outFile target/release/codewhale
-          binary-sign-tool sign -selfSign 1 \
-            -inFile target/release/codewhale-tui \
-            -outFile target/release/codewhale-tui
+              echo "=== Building ==="
+              cargo build --release
+
+              echo "=== Signing binaries ==="
+              binary-sign-tool sign -selfSign 1 \
+                -inFile target/release/codewhale \
+                -outFile target/release/codewhale
+              binary-sign-tool sign -selfSign 1 \
+                -inFile target/release/codewhale-tui \
+                -outFile target/release/codewhale-tui
+
+              echo "=== Done ==="
+            '
 
       - name: Package distribution
         id: package

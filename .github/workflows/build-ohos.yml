@@ -1,7 +1,6 @@
 name: Build OpenHarmony arm64
 
 on:
-  # 手动触发，可指定 CodeWhale 的 git ref（tag/branch/commit）
   workflow_dispatch:
     inputs:
       ref:
@@ -18,6 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: swr.cn-north-4.myhuaweicloud.com/harmonybrew/ci-runner:latest
+      options: --entrypoint sleep infinity --user root
 
     steps:
       - name: Checkout fork
@@ -29,9 +29,6 @@ jobs:
           if [ -n "${{ inputs.version }}" ]; then
             VERSION="${{ inputs.version }}"
           else
-            # 从 workspace Cargo.toml 读取
-            VERSION=$(grep '^version =' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/' || grep 'version = "' Cargo.toml | head -1 | sed 's/.*version = "\(.*\)".*/\1/')
-            # workspace 的 version 在 [workspace.package] 下
             VERSION=$(awk '/^\[workspace\.package\]/{found=1} found && /^version = "/{gsub(/"/,""); print $3; exit}' Cargo.toml)
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"

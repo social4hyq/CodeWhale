@@ -3,30 +3,30 @@ name: Build OpenHarmony arm64
 on:
   workflow_dispatch:
     inputs:
-      ref:
-        description: "CodeWhale git ref (tag, branch, commit)"
-        required: false
-        default: "main"
       version:
-        description: "Version string (e.g. 0.8.53)"
+        description: "Version string (e.g. 0.8.53). Leave empty to read from Cargo.toml."
         required: false
         default: ""
 
 jobs:
   build:
+    name: Build aarch64-unknown-linux-ohos
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout fork
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up QEMU for arm64 emulation
-        uses: docker/setup-qemu-action@v3
+      - name: Setup Rust
+        uses: oxc-project/setup-rust@3d6fb132fbe7cdcb66bf8ec193911c2945369d12 # v1.0.17
         with:
-          platforms: linux/arm64
+          save-cache: false
+          restore-cache: false
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Rustup Adds Target
+        run: rustup target add aarch64-unknown-linux-ohos
+
+      - name: Setup OpenHarmony SDK
+        uses: Boshen/setup-ohos-sdk@edb865a89a712f1f15dbad932dfa9cfce849d95c # v1.0.0
 
       - name: Determine version
         id: meta
@@ -39,51 +39,33 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Building version: $VERSION"
 
-      - name: Pull ci-runner image
+      - name: Fetch dependencies
         run: |
-          docker pull swr.cn-north-4.myhuaweicloud.com/harmonybrew/ci-runner:latest
+          # 先触发依赖下载，然后才能 patch 源码
+          cargo fetch --target aarch64-unknown-linux-ohos
 
-      - name: Build in ci-runner container
+      - name: Patch sources for OpenHarmony
         run: |
-          # 将源码和工作目录挂载到容器中进行构建
-          docker run --rm \
-            --platform linux/arm64 \
-            -v "$GITHUB_WORKSPACE:/workspace" \
-            -w /workspace \
-            -e AWS_LC_SYS_NO_ASM=1 \
-            -e CARGO_BUILD_JOBS=4 \
-            -e HOME=/root \
-            --entrypoint sh \
-            swr.cn-north-4.myhuaweicloud.com/harmonybrew/ci-runner:latest \
-            -c '
-              set -e
-              echo "=== Patching sources ==="
-              chmod +x scripts/patch-ohos.sh
-              bash scripts/patch-ohos.sh
+          chmod +x scripts/patch-ohos.sh
+          bash scripts/patch-ohos.sh
 
-              echo "=== Building ==="
-              cargo build --release
-
-              echo "=== Signing binaries ==="
-              binary-sign-tool sign -selfSign 1 \
-                -inFile target/release/codewhale \
-                -outFile target/release/codewhale
-              binary-sign-tool sign -selfSign 1 \
-                -inFile target/release/codewhale-tui \
-                -outFile target/release/codewhale-tui
-
-              echo "=== Done ==="
-            '
+      - name: Build release binaries
+        env:
+          AWS_LC_SYS_NO_ASM: "1"
+          CARGO_BUILD_JOBS: "4"
+        run: |
+          cargo build --release --target aarch64-unknown-linux-ohos
 
       - name: Package distribution
         id: package
         run: |
           VERSION="${{ steps.meta.outputs.version }}"
           DIST_NAME="codewhale-${VERSION}-ohos-arm64"
+          TARGET_DIR="target/aarch64-unknown-linux-ohos/release"
 
           mkdir -p "/tmp/${DIST_NAME}/bin"
-          cp target/release/codewhale "/tmp/${DIST_NAME}/bin/"
-          cp target/release/codewhale-tui "/tmp/${DIST_NAME}/bin/"
+          cp "${TARGET_DIR}/codewhale" "/tmp/${DIST_NAME}/bin/"
+          cp "${TARGET_DIR}/codewhale-tui" "/tmp/${DIST_NAME}/bin/"
           cp LICENSE "/tmp/${DIST_NAME}/" 2>/dev/null || true
           cp README.md "/tmp/${DIST_NAME}/" 2>/dev/null || true
 
@@ -102,7 +84,7 @@ jobs:
           tag_name: "ohos-${{ steps.meta.outputs.version }}"
           name: "CodeWhale ${{ steps.meta.outputs.version }} (OpenHarmony arm64)"
           body: |
-            CodeWhale `${{ steps.meta.outputs.version }}` built for **OpenHarmony arm64** (musl).
+            CodeWhale `${{ steps.meta.outputs.version }}` built for **OpenHarmony arm64** (target: `aarch64-unknown-linux-ohos`).
 
             **SHA256:** `${{ steps.package.outputs.sha256 }}`
 

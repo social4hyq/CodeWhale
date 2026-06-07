@@ -1,0 +1,98 @@
+name: Build OpenHarmony arm64
+
+on:
+  # 手动触发，可指定 CodeWhale 的 git ref（tag/branch/commit）
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "CodeWhale git ref (tag, branch, commit)"
+        required: false
+        default: "main"
+      version:
+        description: "Version string (e.g. 0.8.53)"
+        required: false
+        default: ""
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: swr.cn-north-4.myhuaweicloud.com/harmonybrew/ci-runner:latest
+
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+
+      - name: Determine version
+        id: meta
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            # 从 workspace Cargo.toml 读取
+            VERSION=$(grep '^version =' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/' || grep 'version = "' Cargo.toml | head -1 | sed 's/.*version = "\(.*\)".*/\1/')
+            # workspace 的 version 在 [workspace.package] 下
+            VERSION=$(awk '/^\[workspace\.package\]/{found=1} found && /^version = "/{gsub(/"/,""); print $3; exit}' Cargo.toml)
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Building version: $VERSION"
+
+      - name: Patch sources for OpenHarmony
+        run: |
+          chmod +x scripts/patch-ohos.sh
+          bash scripts/patch-ohos.sh
+
+      - name: Build release binaries
+        env:
+          AWS_LC_SYS_NO_ASM: "1"
+          CARGO_BUILD_JOBS: "4"
+        run: |
+          cargo build --release
+
+      - name: Sign binaries
+        run: |
+          binary-sign-tool sign -selfSign 1 \
+            -inFile target/release/codewhale \
+            -outFile target/release/codewhale
+          binary-sign-tool sign -selfSign 1 \
+            -inFile target/release/codewhale-tui \
+            -outFile target/release/codewhale-tui
+
+      - name: Package distribution
+        id: package
+        run: |
+          VERSION="${{ steps.meta.outputs.version }}"
+          DIST_NAME="codewhale-${VERSION}-ohos-arm64"
+
+          mkdir -p "/tmp/${DIST_NAME}/bin"
+          cp target/release/codewhale "/tmp/${DIST_NAME}/bin/"
+          cp target/release/codewhale-tui "/tmp/${DIST_NAME}/bin/"
+          cp LICENSE "/tmp/${DIST_NAME}/" 2>/dev/null || true
+          cp README.md "/tmp/${DIST_NAME}/" 2>/dev/null || true
+
+          cd /tmp
+          tar czf "${DIST_NAME}.tar.gz" -C "${DIST_NAME}" .
+          SHA256=$(sha256sum "${DIST_NAME}.tar.gz" | awk '{print $1}')
+
+          cp "${DIST_NAME}.tar.gz" "${GITHUB_WORKSPACE}/"
+          echo "dist_name=${DIST_NAME}" >> "$GITHUB_OUTPUT"
+          echo "sha256=${SHA256}" >> "$GITHUB_OUTPUT"
+          echo "SHA256: ${SHA256}"
+
+      - name: Upload release artifact
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "ohos-${{ steps.meta.outputs.version }}"
+          name: "CodeWhale ${{ steps.meta.outputs.version }} (OpenHarmony arm64)"
+          body: |
+            CodeWhale `${{ steps.meta.outputs.version }}` built for **OpenHarmony arm64** (musl).
+
+            **SHA256:** `${{ steps.package.outputs.sha256 }}`
+
+            ## Install via Homebrew tap
+            ```sh
+            brew tap social4hyq/codewhale https://atomgit.com/social4hyq/homebrew-codewhale.git
+            brew install codewhale
+            ```
+          files: |
+            ${{ steps.package.outputs.dist_name }}.tar.gz

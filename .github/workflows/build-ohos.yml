@@ -17,10 +17,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Setup Rust
-        uses: oxc-project/setup-rust@3d6fb132fbe7cdcb66bf8ec193911c2945369d12 # v1.0.17
+        uses: dtolnay/rust-toolchain@nightly
         with:
-          save-cache: false
-          restore-cache: false
+          components: rust-src
 
       - name: Rustup Adds Target
         run: rustup target add aarch64-unknown-linux-ohos

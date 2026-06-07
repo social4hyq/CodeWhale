@@ -41,15 +41,12 @@ jobs:
       - name: Configure cross-compilation linker
         run: |
           mkdir -p .cargo
-          cat > .cargo/config.toml << 'EOF'
-          [target.aarch64-unknown-linux-ohos]
-          linker = "env", "OHOS_NDK_HOME", "/llvm/bin/clang"
-          EOF
-          # 实际上 cargo config 不支持环境变量拼接，用脚本生成
           CLANG="${OHOS_NDK_HOME}/llvm/bin/clang"
+          SYSROOT="${OHOS_NDK_HOME}/sysroot"
           echo "[target.aarch64-unknown-linux-ohos]" > .cargo/config.toml
           echo "linker = \"${CLANG}\"" >> .cargo/config.toml
           echo "Linker: ${CLANG}"
+          echo "Sysroot: ${SYSROOT}"
           ls -la "${CLANG}" || echo "WARNING: linker not found"
 
       - name: Fetch dependencies
@@ -67,6 +64,8 @@ jobs:
           AWS_LC_SYS_NO_ASM: "1"
           CARGO_BUILD_JOBS: "4"
           TARGET_CC: clang
+          CFLAGS: "--sysroot=${{ env.OHOS_NDK_HOME }}/sysroot --target=aarch64-unknown-linux-ohos"
+          CXXFLAGS: "--sysroot=${{ env.OHOS_NDK_HOME }}/sysroot --target=aarch64-unknown-linux-ohos"
         run: |
           cargo build --release --target aarch64-unknown-linux-ohos
 

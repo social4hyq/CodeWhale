@@ -20,6 +20,14 @@ jobs:
       - name: Checkout fork
         uses: actions/checkout@v4
 
+      - name: Set up QEMU for arm64 emulation
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: linux/arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Determine version
         id: meta
         run: |
@@ -39,6 +47,7 @@ jobs:
         run: |
           # 将源码和工作目录挂载到容器中进行构建
           docker run --rm \
+            --platform linux/arm64 \
             -v "$GITHUB_WORKSPACE:/workspace" \
             -w /workspace \
             -e AWS_LC_SYS_NO_ASM=1 \
